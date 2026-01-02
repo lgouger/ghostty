@@ -1181,16 +1181,9 @@ extension Ghostty {
 
         /// Special case handling for some control keys
         override func performKeyEquivalent(with event: NSEvent) -> Bool {
-            switch (event.type) {
-            case .keyDown:
-                // Continue, we care about key down events
-                break
-
-            default:
-                // Any other key event we don't care about. I don't think its even
-                // possible to receive any other event type.
-                return false
-            }
+            // We only care about key down events. It might not even be possible
+            // to receive any other event type here.
+            guard event.type == .keyDown else { return false }
 
             // Only process events if we're focused. Some key events like C-/ macOS
             // appears to send to the first view in the hierarchy rather than the
@@ -1202,7 +1195,15 @@ extension Ghostty {
                 return false
             }
 
-            // If this event as-is would result in a key binding then we send it.
+            // Let the menu system handle this event if we're not in a key sequence or key table.
+            // This allows the menu bar to flash for shortcuts like Command+V.
+            if keySequence.isEmpty && keyTables.isEmpty {
+                if let menu = NSApp.mainMenu, menu.performKeyEquivalent(with: event) {
+                    return true
+                }
+            }
+
+            // If the menu didn't handle it, check Ghostty bindings for custom shortcuts.
             if let surface {
                 var ghosttyEvent = event.ghosttyKeyEvent(GHOSTTY_ACTION_PRESS)
                 let match = (event.characters ?? "").withCString { ptr in
@@ -1654,6 +1655,7 @@ extension Ghostty {
         struct DerivedConfig {
             let backgroundColor: Color
             let backgroundOpacity: Double
+            let backgroundBlur: Ghostty.Config.BackgroundBlur
             let macosWindowShadow: Bool
             let windowTitleFontFamily: String?
             let windowAppearance: NSAppearance?
@@ -1662,6 +1664,7 @@ extension Ghostty {
             init() {
                 self.backgroundColor = Color(NSColor.windowBackgroundColor)
                 self.backgroundOpacity = 1
+                self.backgroundBlur = .disabled
                 self.macosWindowShadow = true
                 self.windowTitleFontFamily = nil
                 self.windowAppearance = nil
@@ -1671,6 +1674,7 @@ extension Ghostty {
             init(_ config: Ghostty.Config) {
                 self.backgroundColor = config.backgroundColor
                 self.backgroundOpacity = config.backgroundOpacity
+                self.backgroundBlur = config.backgroundBlur
                 self.macosWindowShadow = config.macosWindowShadow
                 self.windowTitleFontFamily = config.windowTitleFontFamily
                 self.windowAppearance = .init(ghosttyConfig: config)
@@ -2213,6 +2217,7 @@ extension Ghostty.SurfaceView {
 
         return NSAttributedString(string: plainString, attributes: attributes)
     }
+
 }
 
 /// Caches a value for some period of time, evicting it automatically when that time expires.

@@ -49,7 +49,7 @@ extension Ghostty {
 
         // True if we're hovering over the left URL view, so we can show it on the right.
         @State private var isHoveringURLLeft: Bool = false
-        
+
         #if canImport(AppKit)
         // Observe SecureInput to detect when its enabled
         @ObservedObject private var secureInput = SecureInput.shared
@@ -122,7 +122,7 @@ extension Ghostty {
                         surfaceView.toggleReadonly(nil)
                     }
                 }
-                
+
                 // Show key state indicator for active key tables and/or pending key sequences
                 KeyStateIndicator(
                     keyTables: surfaceView.keyTables,
@@ -237,6 +237,14 @@ extension Ghostty {
                             .opacity(overlayOpacity)
                     }
                 }
+
+                #if canImport(AppKit)
+                // Grab handle for dragging the window. We want this to appear at the very
+                // top Z-index os it isn't faded by the unfocused overlay.
+                //
+                // This is disabled except on macOS because it uses AppKit drag/drop APIs.
+                SurfaceGrabHandle(surfaceView: surfaceView)
+                #endif
             }
 
         }
@@ -751,24 +759,24 @@ extension Ghostty {
     struct KeyStateIndicator: View {
         let keyTables: [String]
         let keySequence: [KeyboardShortcut]
-        
+
         @State private var isShowingPopover = false
         @State private var position: Position = .bottom
         @State private var dragOffset: CGSize = .zero
         @State private var isDragging = false
-        
+
         private let padding: CGFloat = 8
-        
+
         enum Position {
             case top, bottom
-            
+
             var alignment: Alignment {
                 switch self {
                 case .top: return .top
                 case .bottom: return .bottom
                 }
             }
-            
+
             var popoverEdge: Edge {
                 switch self {
                 case .top: return .top
@@ -848,14 +856,14 @@ extension Ghostty {
                     Divider()
                         .frame(height: 14)
                 }
-                
+
                 // Key sequence indicator
                 if !keySequence.isEmpty {
                     HStack(alignment: .center, spacing: 4) {
                         ForEach(Array(keySequence.enumerated()), id: \.offset) { index, key in
                             KeyCap(key.description)
                         }
-                        
+
                         // Animated ellipsis to indicate waiting for next key
                         PendingIndicator(paused: isDragging)
                     }
@@ -885,11 +893,11 @@ extension Ghostty {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    
+
                     if !keyTables.isEmpty && !keySequence.isEmpty {
                         Divider()
                     }
-                    
+
                     if !keySequence.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
                             Label("Key Sequence", systemImage: "character.cursor.ibeam")
@@ -908,15 +916,15 @@ extension Ghostty {
                 isShowingPopover.toggle()
             }
         }
-        
+
         /// A small keycap-style view for displaying keyboard shortcuts
         struct KeyCap: View {
             let text: String
-            
+
             init(_ text: String) {
                 self.text = text
             }
-            
+
             var body: some View {
                 Text(verbatim: text)
                     .font(.system(size: 12, weight: .medium, design: .rounded))
@@ -933,7 +941,7 @@ extension Ghostty {
                     )
             }
         }
-        
+
         /// Animated dots to indicate waiting for the next key
         struct PendingIndicator: View {
             @State private var animationPhase: Double = 0
@@ -954,7 +962,7 @@ extension Ghostty {
                     }
                 }
             }
-            
+
             private func dotOpacity(for index: Int) -> Double {
                 let phase = animationPhase
                 let offset = Double(index) / 3.0
@@ -985,7 +993,7 @@ extension Ghostty {
     /// Uses a soft, soothing highlight with a pulsing border effect.
     struct HighlightOverlay: View {
         let highlighted: Bool
-        
+
         @State private var borderPulse: Bool = false
 
         var body: some View {
