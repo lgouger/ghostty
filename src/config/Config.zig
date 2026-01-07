@@ -1868,10 +1868,20 @@ keybind: Keybinds = .{},
 /// This setting is only supported currently on macOS.
 @"window-vsync": bool = true,
 
-/// If true, new windows and tabs will inherit the working directory of the
+/// If true, new windows will inherit the working directory of the
 /// previously focused window. If no window was previously focused, the default
 /// working directory will be used (the `working-directory` option).
 @"window-inherit-working-directory": bool = true,
+
+/// If true, new tabs will inherit the working directory of the
+/// previously focused tab. If no tab was previously focused, the default
+/// working directory will be used (the `working-directory` option).
+@"tab-inherit-working-directory": bool = true,
+
+/// If true, new split panes will inherit the working directory of the
+/// previously focused split. If no split was previously focused, the default
+/// working directory will be used (the `working-directory` option).
+@"split-inherit-working-directory": bool = true,
 
 /// If true, new windows and tabs will inherit the font size of the previously
 /// focused window. If no window was previously focused, the default font size
@@ -6472,6 +6482,12 @@ pub const Keybinds = struct {
                 .{ .key = .{ .physical = .page_down }, .mods = .{ .super = true } },
                 .{ .scroll_page_down = {} },
             );
+            try self.set.putFlags(
+                alloc,
+                .{ .key = .{ .unicode = 'j' }, .mods = .{ .super = true } },
+                .{ .scroll_to_selection = {} },
+                .{ .performable = true },
+            );
 
             // Semantic prompts
             try self.set.put(
@@ -6609,6 +6625,12 @@ pub const Keybinds = struct {
                 alloc,
                 .{ .key = .{ .unicode = 'f' }, .mods = .{ .super = true } },
                 .start_search,
+                .{ .performable = true },
+            );
+            try self.set.putFlags(
+                alloc,
+                .{ .key = .{ .unicode = 'e' }, .mods = .{ .super = true } },
+                .search_selection,
                 .{ .performable = true },
             );
             try self.set.putFlags(
