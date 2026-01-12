@@ -2130,7 +2130,7 @@ pub const Surface = extern struct {
         self.as(gobject.Object).notifyByPspec(properties.@"error".impl.param_spec);
     }
 
-    pub fn setSearchActive(self: *Self, active: bool) void {
+    pub fn setSearchActive(self: *Self, active: bool, needle: [:0]const u8) void {
         const priv = self.private();
         var value = gobject.ext.Value.newFrom(active);
         defer value.unset();
@@ -2139,6 +2139,10 @@ pub const Surface = extern struct {
             SearchOverlay.properties.active.name,
             &value,
         );
+
+        if (!std.mem.eql(u8, needle, "")) {
+            priv.search_overlay.setSearchContents(needle);
+        }
 
         if (active) {
             priv.search_overlay.grabFocus();
