@@ -35,9 +35,11 @@ jake-stewart
 jcollie
 juniqlim
 kawarimidoll
+khipp
 kristofersoler
 mahnokropotkinvich
 marrocco-simone
+miguelelgallo
 mikailmm
 mitchellh
 nwehg
@@ -55,5 +57,6 @@ rmunn
 secrus
 slsrepo
 tweedbeetle
+uzaaft
 vlsi
 yamshta
