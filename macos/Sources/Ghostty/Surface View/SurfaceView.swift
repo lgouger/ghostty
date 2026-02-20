@@ -84,7 +84,7 @@ extension Ghostty {
                         .onReceive(pubResign) { notification in
                             guard let window = notification.object as? NSWindow else { return }
                             guard let surfaceWindow = surfaceView.window else { return }
-                            if (surfaceWindow == window) {
+                            if surfaceWindow == window {
                                 windowFocus = false
                             }
                         }
@@ -177,10 +177,10 @@ extension Ghostty {
                 #if canImport(AppKit)
                 // If we have secure input enabled and we're the focused surface and window
                 // then we want to show the secure input overlay.
-                if (ghostty.config.secureInputIndication &&
+                if ghostty.config.secureInputIndication &&
                     secureInput.enabled &&
                     surfaceFocus &&
-                    windowFocus) {
+                    windowFocus {
                     SecureInputOverlay()
                 }
                 #endif
@@ -200,7 +200,7 @@ extension Ghostty {
                 }
 
                 // Show bell border if enabled
-                if (ghostty.config.bellFeatures.contains(.border)) {
+                if ghostty.config.bellFeatures.contains(.border) {
                     BellBorderOverlay(bell: surfaceView.bell)
                 }
 
@@ -208,10 +208,10 @@ extension Ghostty {
                 HighlightOverlay(highlighted: surfaceView.highlighted)
 
                 // If our surface is not healthy, then we render an error view over it.
-                if (!surfaceView.healthy) {
+                if !surfaceView.healthy {
                     Rectangle().fill(ghostty.config.backgroundColor)
                     SurfaceRendererUnhealthyView()
-                } else if (surfaceView.error != nil) {
+                } else if surfaceView.error != nil {
                     Rectangle().fill(ghostty.config.backgroundColor)
                     SurfaceErrorView()
                 }
@@ -220,9 +220,9 @@ extension Ghostty {
                 // rectangle above our view to make it look unfocused. We use "surfaceFocus"
                 // because we want to keep our focused surface dark even if we don't have window
                 // focus.
-                if (isSplit && !surfaceFocus) {
-                    let overlayOpacity = ghostty.config.unfocusedSplitOpacity;
-                    if (overlayOpacity > 0) {
+                if isSplit && !surfaceFocus {
+                    let overlayOpacity = ghostty.config.unfocusedSplitOpacity
+                    if overlayOpacity > 0 {
                         Rectangle()
                             .fill(ghostty.config.unfocusedSplitFill)
                             .allowsHitTesting(false)
@@ -299,8 +299,6 @@ extension Ghostty {
         }
     }
 
-
-
     // This is the resize overlay that shows on top of a surface to show the current
     // size during a resize operation.
     struct SurfaceResizeOverlay: View {
@@ -313,7 +311,7 @@ extension Ghostty {
 
         // This is the last size that we processed. This is how we handle our
         // timer state.
-        @State var lastSize: CGSize? = nil
+        @State var lastSize: CGSize?
 
         // Ready is set to true after a short delay. This avoids some of the
         // challenges of initial view sizing from SwiftUI.
@@ -325,42 +323,42 @@ extension Ghostty {
         // This computed boolean is set to true when the overlay should be hidden.
         private var hidden: Bool {
             // If we aren't ready yet then we wait...
-            if (!ready) { return true; }
+            if !ready { return true; }
 
             // Hidden if we already processed this size.
-            if (lastSize == geoSize) { return true; }
+            if lastSize == geoSize { return true; }
 
             // If we were focused recently we hide it as well. This avoids showing
             // the resize overlay when SwiftUI is lazily resizing.
             if let instant = focusInstant {
                 let d = instant.duration(to: ContinuousClock.now)
-                if (d < .milliseconds(500)) {
+                if d < .milliseconds(500) {
                     // Avoid this size completely. We can't set values during
                     // view updates so we have to defer this to another tick.
                     DispatchQueue.main.async {
                         lastSize = geoSize
                     }
 
-                    return true;
+                    return true
                 }
             }
 
             // Hidden depending on overlay config
-            switch (overlay) {
-            case .never: return true;
-            case .always: return false;
-            case .after_first: return lastSize == nil;
+            switch overlay {
+            case .never: return true
+            case .always: return false
+            case .after_first: return lastSize == nil
             }
         }
 
         var body: some View {
             VStack {
-                if (!position.top()) {
+                if !position.top() {
                     Spacer()
                 }
 
                 HStack {
-                    if (!position.left()) {
+                    if !position.left() {
                         Spacer()
                     }
 
@@ -374,12 +372,12 @@ extension Ghostty {
                         .lineLimit(1)
                         .truncationMode(.tail)
 
-                    if (!position.right()) {
+                    if !position.right() {
                         Spacer()
                     }
                 }
 
-                if (!position.bottom()) {
+                if !position.bottom() {
                     Spacer()
                 }
             }
@@ -399,7 +397,7 @@ extension Ghostty {
 
                 // We only sleep if we're ready. If we're not ready then we want to set
                 // our last size right away to avoid a flash.
-                if (ready) {
+                if ready {
                     try? await Task.sleep(nanoseconds: UInt64(duration) * 1_000_000)
                 }
 
@@ -653,19 +651,19 @@ extension Ghostty {
     /// libghostty, usually from the Ghostty configuration.
     struct SurfaceConfiguration {
         /// Explicit font size to use in points
-        var fontSize: Float32? = nil
+        var fontSize: Float32?
 
         /// Explicit working directory to set
-        var workingDirectory: String? = nil
+        var workingDirectory: String?
 
         /// Explicit command to set
-        var command: String? = nil
+        var command: String?
 
         /// Environment variables to set for the terminal
         var environmentVariables: [String: String] = [:]
 
         /// Extra input to send as stdin
-        var initialInput: String? = nil
+        var initialInput: String?
 
         /// Wait after the command
         var waitAfterCommand: Bool = false
@@ -749,7 +747,7 @@ extension Ghostty {
                         return try keys.withCStrings { keyCStrings in
                             return try values.withCStrings { valueCStrings in
                                 // Create array of ghostty_env_var_s
-                                var envVars = Array<ghostty_env_var_s>()
+                                var envVars = [ghostty_env_var_s]()
                                 envVars.reserveCapacity(environmentVariables.count)
                                 for i in 0..<environmentVariables.count {
                                     envVars.append(ghostty_env_var_s(
@@ -878,7 +876,7 @@ extension Ghostty {
                 // Key sequence indicator
                 if !keySequence.isEmpty {
                     HStack(alignment: .center, spacing: 4) {
-                        ForEach(Array(keySequence.enumerated()), id: \.offset) { index, key in
+                        ForEach(Array(keySequence.enumerated()), id: \.offset) { _, key in
                             KeyCap(key.description)
                         }
 
@@ -1265,8 +1263,8 @@ extension FocusedValues {
 extension Ghostty.SurfaceView {
     class SearchState: ObservableObject {
         @Published var needle: String = ""
-        @Published var selected: UInt? = nil
-        @Published var total: UInt? = nil
+        @Published var selected: UInt?
+        @Published var total: UInt?
 
         init(from startSearch: Ghostty.Action.StartSearch) {
             self.needle = startSearch.needle ?? ""
