@@ -380,13 +380,7 @@ class AppDelegate: NSObject,
 
             if let why = event.attributeDescriptor(forKeyword: keyword) {
                 switch why.typeCodeValue {
-                case kAEShutDown:
-                    fallthrough
-
-                case kAERestart:
-                    fallthrough
-
-                case kAEReallyLogOut:
+                case kAEShutDown, kAERestart, kAEReallyLogOut:
                     return .terminateNow
 
                 default:
@@ -1082,10 +1076,8 @@ class AppDelegate: NSObject,
 
     func findSurface(forUUID uuid: UUID) -> Ghostty.SurfaceView? {
         for c in TerminalController.all {
-            for view in c.surfaceTree {
-                if view.id == uuid {
-                    return view
-                }
+            for view in c.surfaceTree where view.id == uuid {
+                return view
             }
         }
 

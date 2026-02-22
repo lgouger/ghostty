@@ -22,6 +22,7 @@
 abudvytis
 aindriu80
 alanmoyano
+alexfeijoo44
 andrejdaskalov
 balazs-szucs
 bennettp123
@@ -55,9 +56,11 @@ guilhermetk
 hakonhagland
 halosatrio
 hqnna
+jacobsandlund
 jake-stewart
 jcollie
 johnslavik
+josephmart
 jparise
 juniqlim
 kawarimidoll
@@ -68,6 +71,7 @@ kjvdven
 kloneets
 kristina8888
 kristofersoler
+laxystem
 liby
 lonsagisawa
 mahnokropotkinvich
@@ -80,6 +84,8 @@ misairuzame
 mitchellh
 miupa
 mtak
+natesmyth
+neo773
 nicosuave
 nwehg
 oshdubh
@@ -95,6 +101,7 @@ priyans-hu
 prsweet
 qwerasd205
 reo101
+rgehan
 rmengelbrecht
 rmunn
 rockorager
@@ -102,6 +109,7 @@ rpfaeffle
 secrus
 silveirapf
 slsrepo
+sunshine-syz
 tdslot
 ticclick
 tnagatomi
