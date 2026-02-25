@@ -44,6 +44,7 @@ daiimus
 damyanbogoev
 danulqua
 doprz
+douglance
 elias8
 ephemera
 eriksremess
@@ -72,6 +73,7 @@ khipp
 kirwiisp
 kjvdven
 kloneets
+koranir
 kristina8888
 kristofersoler
 laxystem
@@ -91,6 +93,7 @@ mtak
 natesmyth
 neo773
 nicosuave
+nmggithub
 nwehg
 oshdubh
 pan93412
