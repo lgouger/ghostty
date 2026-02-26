@@ -24,6 +24,7 @@ abudvytis
 aindriu80
 alanmoyano
 alexfeijoo44
+amadeus
 andrejdaskalov
 atomk
 balazs-szucs
@@ -81,6 +82,7 @@ liby
 lonsagisawa
 mahnokropotkinvich
 marijagjorgjieva
+markhuot
 marrocco-simone
 matkotiric
 miguelelgallo
