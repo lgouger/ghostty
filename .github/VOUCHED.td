@@ -61,6 +61,7 @@ guilhermetk
 hakonhagland
 halosatrio
 hqnna
+icodesign
 jacobsandlund
 jake-stewart
 jcollie
@@ -86,6 +87,7 @@ markhuot
 marrocco-simone
 matkotiric
 miguelelgallo
+mihi314
 mikailmm
 misairuzame
 mitchellh
