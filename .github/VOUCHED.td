@@ -20,7 +20,9 @@
 # "!denounce" or "!denounce [username]" on a discussion.
 00-kat
 aalhendi
+abdurrahmanski
 abudvytis
+adrum
 aindriu80
 alanmoyano
 alexfeijoo44
@@ -44,6 +46,7 @@ d-dudas
 daiimus
 damyanbogoev
 danulqua
+diaaeddin
 doprz
 douglance
 elias8
@@ -80,6 +83,7 @@ kristina8888
 kristofersoler
 laxystem
 liby
+linustalacko
 lonsagisawa
 mahnokropotkinvich
 marijagjorgjieva
@@ -108,6 +112,7 @@ phush0
 piedrahitac
 pluiedev
 pouwerkerk
+prakhar54-byte
 priyans-hu
 qwerasd205
 reo101
