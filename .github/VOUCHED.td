@@ -26,6 +26,7 @@ adrum
 aindriu80
 alanmoyano
 alexfeijoo44
+alexjuca
 amadeus
 andrejdaskalov
 atomk
@@ -38,6 +39,7 @@ bitigchi
 bkircher
 bo2themax
 brentschroeter
+cespare
 charliie-dev
 chernetskyi
 craziestowl
@@ -49,6 +51,7 @@ danulqua
 diaaeddin
 doprz
 douglance
+drepper
 elias8
 ephemera
 eriksremess
