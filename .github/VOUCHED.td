@@ -48,6 +48,7 @@ d-dudas
 daiimus
 damyanbogoev
 danulqua
+dervedro
 diaaeddin
 doprz
 douglance
@@ -71,6 +72,7 @@ icodesign
 jacobsandlund
 jake-stewart
 jcollie
+jguthmiller
 johnslavik
 josephmart
 jparise
@@ -90,6 +92,7 @@ linustalacko
 lonsagisawa
 mahnokropotkinvich
 marijagjorgjieva
+markdorison
 markhuot
 marrocco-simone
 matkotiric
@@ -97,6 +100,7 @@ miguelelgallo
 mihi314
 mikailmm
 misairuzame
+mischief
 mitchellh
 miupa
 mrmage
@@ -120,6 +124,7 @@ priyans-hu
 qwerasd205
 reo101
 rgehan
+rhodes-b
 rmengelbrecht
 rmunn
 rockorager
