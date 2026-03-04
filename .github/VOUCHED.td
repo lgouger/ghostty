@@ -24,6 +24,7 @@ abdurrahmanski
 abudvytis
 adrum
 aindriu80
+alaasdk
 alanmoyano
 alexfeijoo44
 alexjuca
@@ -42,6 +43,7 @@ brentschroeter
 cespare
 charliie-dev
 chernetskyi
+cmwetherell
 craziestowl
 curtismoncoq
 d-dudas
