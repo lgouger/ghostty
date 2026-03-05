@@ -30,6 +30,7 @@ alexfeijoo44
 alexjuca
 amadeus
 andrejdaskalov
+anthonyzhoon
 atomk
 balazs-szucs
 bennettp123
@@ -54,6 +55,7 @@ dervedro
 diaaeddin
 doprz
 douglance
+douglas
 drepper
 elias8
 ephemera
@@ -92,12 +94,14 @@ laxystem
 liby
 linustalacko
 lonsagisawa
+mac0ne
 mahnokropotkinvich
 marijagjorgjieva
 markdorison
 markhuot
 marrocco-simone
 matkotiric
+michielvk
 miguelelgallo
 mihi314
 mikailmm
