@@ -844,10 +844,11 @@ pub const Surface = extern struct {
     /// should be applied to the surface
     fn closureShouldUnfocusedSplitBeShown(
         _: *Self,
+        search_active: c_int,
         focused: c_int,
         is_split: c_int,
     ) callconv(.c) c_int {
-        return @intFromBool(focused == 0 and is_split != 0);
+        return @intFromBool(search_active == 0 and focused == 0 and is_split != 0);
     }
 
     /// Callback used to determine whether unfocused-window-fill / unfocused-window-opacity
