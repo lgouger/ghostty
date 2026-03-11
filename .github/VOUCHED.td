@@ -45,6 +45,7 @@ brentschroeter
 cespare
 charliie-dev
 chernetskyi
+chronologos
 cmwetherell
 craziestowl
 curtismoncoq
@@ -60,6 +61,7 @@ doprz
 douglance
 douglas
 drepper
+dzhlobo
 elias8
 ephemera
 eriksremess
@@ -75,6 +77,7 @@ guilhermetk
 hakonhagland
 halosatrio
 hqnna
+hulet
 icodesign
 jacobsandlund
 jake-stewart
@@ -122,6 +125,7 @@ nicosuave
 nmggithub
 noib3
 nwehg
+ocean6954
 oshdubh
 pan93412
 pangoraw
@@ -143,6 +147,7 @@ rmunn
 rockorager
 rpfaeffle
 secrus
+seruman
 silveirapf
 slsrepo
 sunshine-syz
@@ -154,6 +159,7 @@ tristan957
 tweedbeetle
 uhojin
 uzaaft
+vaughanandrews
 vlsi
 yamshta
 zenyr

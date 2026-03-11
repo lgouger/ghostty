@@ -588,7 +588,7 @@ class TerminalWindow: NSWindow {
         let backgroundColor: NSColor
         let backgroundOpacity: Double
         let macosWindowButtons: Ghostty.MacOSWindowButtons
-        let macosTitlebarStyle: String
+        let macosTitlebarStyle: Ghostty.Config.MacOSTitlebarStyle
         let windowCornerRadius: CGFloat
 
         init() {
@@ -597,7 +597,7 @@ class TerminalWindow: NSWindow {
             self.backgroundOpacity = 1
             self.macosWindowButtons = .visible
             self.backgroundBlur = .disabled
-            self.macosTitlebarStyle = "transparent"
+            self.macosTitlebarStyle = .default
             self.windowCornerRadius = 16
         }
 
@@ -613,7 +613,7 @@ class TerminalWindow: NSWindow {
             // Native, transparent, and hidden styles use 16pt radius
             // Tabs style uses 20pt radius
             switch config.macosTitlebarStyle {
-            case "tabs":
+            case .tabs:
                 self.windowCornerRadius = 20
             default:
                 self.windowCornerRadius = 16
@@ -834,5 +834,14 @@ extension TerminalWindow: TabTitleEditorDelegate {
     ) {
         guard let targetController = targetWindow.windowController as? BaseTerminalController else { return }
         targetController.promptTabTitle()
+    }
+
+    func tabTitleEditor(_ editor: TabTitleEditor, didFinishEditing targetWindow: NSWindow) {
+        // After inline editing, the first responder is the window itself.
+        // Restore focus to the terminal surface so keyboard input works.
+        guard let controller = windowController as? BaseTerminalController,
+              let focusedSurface = controller.focusedSurface
+        else { return }
+        makeFirstResponder(focusedSurface)
     }
 }
