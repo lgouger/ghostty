@@ -10,6 +10,172 @@ import XCTest
 final class GhosttyWindowPositionUITests: GhosttyCustomConfigCase {
     override static var runsForEachTargetApplicationUIConfiguration: Bool { false }
 
+    // MARK: - Cascading
+
+    @MainActor func testWindowCascading() async throws {
+        try updateConfig(
+            """
+            window-width = 30
+            window-height = 10
+            title = "GhosttyWindowPositionUITests"
+            """
+        )
+
+        let app = try ghosttyApplication()
+        // Suppress Restoration
+        app.launchArguments += ["-NSQuitAlwaysKeepsWindows", "NO"]
+        // Clean run
+        app.launchEnvironment["GHOSTTY_CLEAR_USER_DEFAULTS"] = "YES"
+
+        app.launch() // window in the center
+
+//        app.menuBarItems["Window"].firstMatch.click()
+//        app.menuItems["_zoomTopLeft:"].firstMatch.click()
+//
+//        // wait for the animation to finish
+//        try await Task.sleep(for: .seconds(0.5))
+
+        let window = app.windows.firstMatch
+        let windowFrame = window.frame
+//        XCTAssertEqual(windowFrame.minX, 0, "Window should be on the left")
+
+        app.typeKey("n", modifierFlags: [.command])
+
+        let window2 = app.windows.firstMatch
+        XCTAssertTrue(window2.waitForExistence(timeout: 5), "New window should appear")
+        let windowFrame2 = window2.frame
+        XCTAssertNotEqual(windowFrame, windowFrame2, "New window should have moved")
+
+        XCTAssertEqual(windowFrame2.minX, windowFrame.minX + 30, accuracy: 5, "New window should be on the right")
+
+        XCTAssertEqual(windowFrame2.minY, windowFrame.minY + 30, accuracy: 5, "New window should be on the bottom right")
+
+        app.typeKey("n", modifierFlags: [.command])
+
+        let window3 = app.windows.firstMatch
+        XCTAssertTrue(window3.waitForExistence(timeout: 5), "New window should appear")
+        let windowFrame3 = window3.frame
+        XCTAssertNotEqual(windowFrame2, windowFrame3, "New window should have moved")
+
+        XCTAssertEqual(windowFrame3.minX, windowFrame2.minX + 30, accuracy: 5, "New window should be on the right")
+
+        XCTAssertEqual(windowFrame3.minY, windowFrame2.minY + 30, accuracy: 5, "New window should be on the bottom right")
+
+        app.typeKey("n", modifierFlags: [.command])
+
+        let window4 = app.windows.firstMatch
+        XCTAssertTrue(window4.waitForExistence(timeout: 5), "New window should appear")
+        let windowFrame4 = window4.frame
+        XCTAssertNotEqual(windowFrame3, windowFrame4, "New window should have moved")
+
+        XCTAssertEqual(windowFrame4.minX, windowFrame3.minX + 30, accuracy: 5, "New window should be on the right")
+
+        XCTAssertEqual(windowFrame4.minY, windowFrame3.minY + 30, accuracy: 5, "New window should be on the bottom right")
+    }
+
+    @MainActor func testDragSplitWindowPosition() async throws {
+        try updateConfig(
+            """
+            window-width = 40
+            window-height = 20
+            title = "GhosttyWindowPositionUITests"
+            macos-titlebar-style = hidden
+            """
+        )
+
+        let app = try ghosttyApplication()
+        // Suppress Restoration
+        app.launchArguments += ["-NSQuitAlwaysKeepsWindows", "NO"]
+        // Clean run
+        app.launchEnvironment["GHOSTTY_CLEAR_USER_DEFAULTS"] = "YES"
+
+        app.launch() // window in the center
+
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 5), "New window should appear")
+
+        // remove fixed size
+        try updateConfig(
+            """
+            title = "GhosttyWindowPositionUITests"
+            macos-titlebar-style = hidden
+            """
+        )
+        app.typeKey(",", modifierFlags: [.command, .shift])
+
+        app.typeKey("d", modifierFlags: [.command])
+
+        let rightSplit = app.groups["Right pane"]
+        let rightFrame = rightSplit.frame
+
+        let sourcePos = rightSplit.coordinate(withNormalizedOffset: .zero)
+            .withOffset(.init(dx: rightFrame.size.width / 2, dy: 3))
+
+        let targetPos = rightSplit.coordinate(withNormalizedOffset: .zero)
+            .withOffset(.init(dx: rightFrame.size.width + 100, dy: 0))
+
+        sourcePos.click(forDuration: 0.2, thenDragTo: targetPos)
+
+        let window2 = app.windows.firstMatch
+        XCTAssertTrue(window2.waitForExistence(timeout: 5), "New window should appear")
+        let windowFrame2 = window2.frame
+
+        try await Task.sleep(for: .seconds(0.5))
+
+        XCTAssertEqual(windowFrame2.minX, rightFrame.maxX + 100, accuracy: 5, "New window should be target position")
+        XCTAssertEqual(windowFrame2.minY, rightFrame.minY, accuracy: 5, "New window should be target position")
+        XCTAssertEqual(windowFrame2.width, rightFrame.width, accuracy: 5, "New window should use size from config")
+         XCTAssertEqual(windowFrame2.height, rightFrame.height, accuracy: 5, "New window should use size from config")
+    }
+
+    @MainActor func testDragSplitWindowPositionWithFixedSize() async throws {
+        try updateConfig(
+            """
+            window-width = 40
+            window-height = 20
+            title = "GhosttyWindowPositionUITests"
+            macos-titlebar-style = hidden
+            """
+        )
+
+        let app = try ghosttyApplication()
+        // Suppress Restoration
+        app.launchArguments += ["-NSQuitAlwaysKeepsWindows", "NO"]
+        // Clean run
+        app.launchEnvironment["GHOSTTY_CLEAR_USER_DEFAULTS"] = "YES"
+
+        app.launch() // window in the center
+
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 5), "New window should appear")
+        let windowFrame = window.frame
+
+        app.typeKey("d", modifierFlags: [.command])
+
+        let rightSplit = app.groups["Right pane"]
+        let rightFrame = rightSplit.frame
+
+        let sourcePos = rightSplit.coordinate(withNormalizedOffset: .zero)
+            .withOffset(.init(dx: rightFrame.size.width / 2, dy: 3))
+
+        let targetPos = rightSplit.coordinate(withNormalizedOffset: .zero)
+            .withOffset(.init(dx: rightFrame.size.width + 100, dy: 0))
+
+        sourcePos.click(forDuration: 0.2, thenDragTo: targetPos)
+
+        let window2 = app.windows.firstMatch
+        XCTAssertTrue(window2.waitForExistence(timeout: 5), "New window should appear")
+        let windowFrame2 = window2.frame
+
+        try await Task.sleep(for: .seconds(0.5))
+
+        XCTAssertEqual(windowFrame2.minX, rightFrame.maxX + 100, accuracy: 5, "New window should be target position")
+        XCTAssertEqual(windowFrame2.minY, rightFrame.minY, accuracy: 5, "New window should be target position")
+        XCTAssertEqual(windowFrame2.width, windowFrame.width, accuracy: 5, "New window should use size from config")
+        // We're still using right frame, because of the debug banner
+         XCTAssertEqual(windowFrame2.height, rightFrame.height, accuracy: 5, "New window should use size from config")
+    }
+
     // MARK: - Restore round-trip per titlebar style
 
     @MainActor func testRestoredNative() throws { try runRestoreTest(titlebarStyle: "native") }
@@ -128,12 +294,19 @@ final class GhosttyWindowPositionUITests: GhosttyCustomConfigCase {
         )
 
         let app = try ghosttyApplication()
+        // Suppress Restoration
+        app.launchArguments += ["-NSQuitAlwaysKeepsWindows", "NO"]
+        // Clean run
+        app.launchEnvironment["GHOSTTY_CLEAR_USER_DEFAULTS"] = "YES"
         app.launch()
 
         let window = app.windows.firstMatch
         XCTAssertTrue(window.waitForExistence(timeout: 5), "Window should appear")
 
         let firstFrame = window.frame
+        let screenFrame = NSScreen.main?.frame ?? .zero
+
+        XCTAssertEqual(firstFrame.midX, screenFrame.midX, accuracy: 5.0, "First window should be centered horizontally")
 
         // Close the window and open a new one — it should restore the same frame.
         app.typeKey("w", modifierFlags: [.command])

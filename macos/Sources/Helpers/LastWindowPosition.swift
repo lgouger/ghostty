@@ -15,7 +15,7 @@ class LastWindowPosition {
         guard let window, window.isVisible else { return false }
         let frame = window.frame
         let rect = [frame.origin.x, frame.origin.y, frame.size.width, frame.size.height]
-        UserDefaults.standard.set(rect, forKey: positionKey)
+        UserDefaults.ghostty.set(rect, forKey: positionKey)
         return true
     }
 
@@ -32,7 +32,7 @@ class LastWindowPosition {
     func restore(_ window: NSWindow, origin restoreOrigin: Bool = true, size restoreSize: Bool = true) -> Bool {
         guard restoreOrigin || restoreSize else { return false }
 
-        guard let values = UserDefaults.standard.array(forKey: positionKey) as? [Double],
+        guard let values = UserDefaults.ghostty.array(forKey: positionKey) as? [Double],
               values.count >= 2 else { return false }
 
         let lastPosition = CGPoint(x: values[0], y: values[1])
@@ -50,7 +50,13 @@ class LastWindowPosition {
             newFrame.size.height = min(values[3], visibleFrame.height)
         }
 
-        if restoreOrigin, !visibleFrame.contains(newFrame.origin) {
+        // If the new frame is not constrained to the visible screen,
+        // we need to shift it a little bit before AppKit does this for us,
+        // so that we can save the correct size beforehand.
+        // This fixes restoration while running UI tests,
+        // where config is modified without switching apps,
+        // which will not trigger `windowDidBecomeMain`.
+        if restoreOrigin, !visibleFrame.contains(newFrame) {
             newFrame.origin.x = max(visibleFrame.minX, min(visibleFrame.maxX - newFrame.width, newFrame.origin.x))
             newFrame.origin.y = max(visibleFrame.minY, min(visibleFrame.maxY - newFrame.height, newFrame.origin.y))
         }
