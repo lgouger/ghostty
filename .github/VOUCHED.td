@@ -55,6 +55,7 @@ damyanbogoev
 danulqua
 dariogriffo
 dervedro
+devsunb
 diaaeddin
 dmehala
 doprz
@@ -83,6 +84,7 @@ icodesign
 jacobsandlund
 jake-stewart
 jcollie
+jesusvazquez
 jguthmiller
 jmcgover
 johnslavik
