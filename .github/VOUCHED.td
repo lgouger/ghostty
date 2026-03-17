@@ -84,6 +84,8 @@ gpanders
 guilhermetk
 hakonhagland
 halosatrio
+heaths
+-highimpact-dev Disrespectful AI user
 hqnna
 hulet
 icodesign
@@ -130,7 +132,6 @@ miupa
 molechowski
 mrmage
 mtak
-mvanhorn
 natesmyth
 neo773
 nicosuave

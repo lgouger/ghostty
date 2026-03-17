@@ -81,10 +81,16 @@ pub const input = struct {
     // We have to be careful to only import targeted files within
     // the input package because the full package brings in too many
     // other dependencies.
+    const focus = terminal.focus;
     const paste = @import("input/paste.zig");
     const key = @import("input/key.zig");
     const key_encode = @import("input/key_encode.zig");
     const mouse_encode = @import("input/mouse_encode.zig");
+
+    // Focus-related APIs
+    pub const max_focus_encode_size = focus.max_encode_size;
+    pub const FocusEvent = focus.Event;
+    pub const encodeFocus = focus.encode;
 
     // Paste-related APIs
     pub const PasteError = paste.Error;
@@ -158,6 +164,8 @@ comptime {
         @export(&c.osc_end, .{ .name = "ghostty_osc_end" });
         @export(&c.osc_command_type, .{ .name = "ghostty_osc_command_type" });
         @export(&c.osc_command_data, .{ .name = "ghostty_osc_command_data" });
+        @export(&c.focus_encode, .{ .name = "ghostty_focus_encode" });
+        @export(&c.mode_report_encode, .{ .name = "ghostty_mode_report_encode" });
         @export(&c.paste_is_safe, .{ .name = "ghostty_paste_is_safe" });
         @export(&c.color_rgb_get, .{ .name = "ghostty_color_rgb_get" });
         @export(&c.sgr_new, .{ .name = "ghostty_sgr_new" });
@@ -179,6 +187,8 @@ comptime {
         @export(&c.terminal_resize, .{ .name = "ghostty_terminal_resize" });
         @export(&c.terminal_vt_write, .{ .name = "ghostty_terminal_vt_write" });
         @export(&c.terminal_scroll_viewport, .{ .name = "ghostty_terminal_scroll_viewport" });
+        @export(&c.terminal_mode_get, .{ .name = "ghostty_terminal_mode_get" });
+        @export(&c.terminal_mode_set, .{ .name = "ghostty_terminal_mode_set" });
 
         // On Wasm we need to export our allocator convenience functions.
         if (builtin.target.cpu.arch.isWasm()) {
