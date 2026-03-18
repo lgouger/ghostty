@@ -45,7 +45,6 @@ bitigchi
 bkircher
 bo2themax
 brentschroeter
-cadebrown
 cespare
 charliie-dev
 chernetskyi
@@ -85,6 +84,7 @@ guilhermetk
 hakonhagland
 halosatrio
 heaths
+heddxh heddxh
 -highimpact-dev Disrespectful AI user
 hqnna
 hulet
@@ -145,6 +145,7 @@ pangoraw
 pauley-unsaturated
 peilingjiang
 peterdavehello
+philocalyst
 phush0
 piedrahitac
 pluiedev
