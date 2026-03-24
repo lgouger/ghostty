@@ -59,6 +59,7 @@ damyanbogoev
 danulqua
 dariogriffo
 davidsanchez222
+deblasis
 dervedro
 devsunb
 diaaeddin
@@ -117,6 +118,7 @@ liby
 linustalacko
 lonsagisawa
 luisnquin
+lynicis
 mac0ne
 mahnokropotkinvich
 marijagjorgjieva
@@ -184,6 +186,7 @@ uhojin
 unphased
 uzaaft
 vaughanandrews
+viruslobster
 vlsi
 wyounas
 yamshta
