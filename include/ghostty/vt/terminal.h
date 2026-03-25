@@ -341,7 +341,7 @@ typedef enum {
   /**
    * Opaque userdata pointer passed to all callbacks.
    *
-   * Input type: void**
+   * Input type: void*
    */
   GHOSTTY_TERMINAL_OPT_USERDATA = 0,
 
@@ -350,7 +350,7 @@ typedef enum {
    * to the pty (e.g. in response to a DECRQM query or device
    * status report). Set to NULL to ignore such sequences.
    *
-   * Input type: GhosttyTerminalWritePtyFn*
+   * Input type: GhosttyTerminalWritePtyFn
    */
   GHOSTTY_TERMINAL_OPT_WRITE_PTY = 1,
 
@@ -358,7 +358,7 @@ typedef enum {
    * Callback invoked when the terminal receives a BEL character
    * (0x07). Set to NULL to ignore bell events.
    *
-   * Input type: GhosttyTerminalBellFn*
+   * Input type: GhosttyTerminalBellFn
    */
   GHOSTTY_TERMINAL_OPT_BELL = 2,
 
@@ -366,7 +366,7 @@ typedef enum {
    * Callback invoked when the terminal receives an ENQ character
    * (0x05). Set to NULL to send no response.
    *
-   * Input type: GhosttyTerminalEnquiryFn*
+   * Input type: GhosttyTerminalEnquiryFn
    */
   GHOSTTY_TERMINAL_OPT_ENQUIRY = 3,
 
@@ -374,7 +374,7 @@ typedef enum {
    * Callback invoked when the terminal receives an XTVERSION query
    * (CSI > q). Set to NULL to report the default "libghostty" string.
    *
-   * Input type: GhosttyTerminalXtversionFn*
+   * Input type: GhosttyTerminalXtversionFn
    */
   GHOSTTY_TERMINAL_OPT_XTVERSION = 4,
 
@@ -383,7 +383,7 @@ typedef enum {
    * sequences (e.g. OSC 0 or OSC 2). Set to NULL to ignore title
    * change events.
    *
-   * Input type: GhosttyTerminalTitleChangedFn*
+   * Input type: GhosttyTerminalTitleChangedFn
    */
   GHOSTTY_TERMINAL_OPT_TITLE_CHANGED = 5,
 
@@ -391,7 +391,7 @@ typedef enum {
    * Callback invoked in response to XTWINOPS size queries
    * (CSI 14/16/18 t). Set to NULL to silently ignore size queries.
    *
-   * Input type: GhosttyTerminalSizeFn*
+   * Input type: GhosttyTerminalSizeFn
    */
   GHOSTTY_TERMINAL_OPT_SIZE = 6,
 
@@ -401,7 +401,7 @@ typedef enum {
    * to report the current scheme, or return false to silently ignore.
    * Set to NULL to ignore color scheme queries.
    *
-   * Input type: GhosttyTerminalColorSchemeFn*
+   * Input type: GhosttyTerminalColorSchemeFn
    */
   GHOSTTY_TERMINAL_OPT_COLOR_SCHEME = 7,
 
@@ -411,7 +411,7 @@ typedef enum {
    * pointer with response data, or return false to silently ignore.
    * Set to NULL to ignore device attributes queries.
    *
-   * Input type: GhosttyTerminalDeviceAttributesFn*
+   * Input type: GhosttyTerminalDeviceAttributesFn
    */
   GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES = 8,
 
@@ -556,6 +556,38 @@ typedef enum {
    * Output type: GhosttyString *
    */
   GHOSTTY_TERMINAL_DATA_PWD = 13,
+
+  /**
+   * The total number of rows in the active screen including scrollback.
+   *
+   * Output type: size_t *
+   */
+  GHOSTTY_TERMINAL_DATA_TOTAL_ROWS = 14,
+
+  /**
+   * The number of scrollback rows (total rows minus viewport rows).
+   *
+   * Output type: size_t *
+   */
+  GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS = 15,
+
+  /**
+   * The total width of the terminal in pixels.
+   *
+   * This is cols * cell_width_px as set by ghostty_terminal_resize().
+   *
+   * Output type: uint32_t *
+   */
+  GHOSTTY_TERMINAL_DATA_WIDTH_PX = 16,
+
+  /**
+   * The total height of the terminal in pixels.
+   *
+   * This is rows * cell_height_px as set by ghostty_terminal_resize().
+   *
+   * Output type: uint32_t *
+   */
+  GHOSTTY_TERMINAL_DATA_HEIGHT_PX = 17,
 } GhosttyTerminalData;
 
 /**
@@ -604,23 +636,34 @@ void ghostty_terminal_reset(GhosttyTerminal terminal);
  * screen will reflow content if wraparound mode is enabled; the alternate
  * screen does not reflow. If the dimensions are unchanged, this is a no-op.
  *
+ * This also updates the terminal's pixel dimensions (used for image
+ * protocols and size reports), disables synchronized output mode (allowed
+ * by the spec so that resize results are shown immediately), and sends an
+ * in-band size report if mode 2048 is enabled.
+ *
  * @param terminal The terminal handle (NULL returns GHOSTTY_INVALID_VALUE)
  * @param cols New width in cells (must be greater than zero)
  * @param rows New height in cells (must be greater than zero)
+ * @param cell_width_px Width of a single cell in pixels
+ * @param cell_height_px Height of a single cell in pixels
  * @return GHOSTTY_SUCCESS on success, or an error code on failure
  *
  * @ingroup terminal
  */
 GhosttyResult ghostty_terminal_resize(GhosttyTerminal terminal,
                                       uint16_t cols,
-                                      uint16_t rows);
+                                      uint16_t rows,
+                                      uint32_t cell_width_px,
+                                      uint32_t cell_height_px);
 
 /**
  * Set an option on the terminal.
  *
  * Configures terminal callbacks and associated state such as the
- * write_pty callback and userdata pointer. A NULL value pointer
- * clears the option to its default (NULL/disabled).
+ * write_pty callback and userdata pointer. The value is passed
+ * directly for pointer types (callbacks, userdata) or as a pointer
+ * to the value for non-pointer types (e.g. GhosttyString*).
+ * NULL clears the option to its default.
  *
  * Callbacks are invoked synchronously during ghostty_terminal_vt_write().
  * Callbacks must not call ghostty_terminal_vt_write() on the same

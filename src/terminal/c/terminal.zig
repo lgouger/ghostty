@@ -304,7 +304,7 @@ pub const Option = enum(c_int) {
     /// Input type expected for setting the option.
     pub fn InType(comptime self: Option) type {
         return switch (self) {
-            .userdata => ?*anyopaque,
+            .userdata => ?*const anyopaque,
             .write_pty => ?Effects.WritePtyFn,
             .bell => ?Effects.BellFn,
             .color_scheme => ?Effects.ColorSchemeFn,
@@ -313,7 +313,7 @@ pub const Option = enum(c_int) {
             .xtversion => ?Effects.XtversionFn,
             .title_changed => ?Effects.TitleChangedFn,
             .size_cb => ?Effects.SizeFn,
-            .title, .pwd => lib.String,
+            .title, .pwd => ?*const lib.String,
         };
     }
 };
@@ -330,9 +330,11 @@ pub fn set(
         };
     }
 
+    const wrapper = terminal_ orelse return .invalid_value;
+
     return switch (option) {
         inline else => |comptime_option| setTyped(
-            terminal_,
+            wrapper,
             comptime_option,
             @ptrCast(@alignCast(value)),
         ),
@@ -340,21 +342,20 @@ pub fn set(
 }
 
 fn setTyped(
-    terminal_: Terminal,
+    wrapper: *TerminalWrapper,
     comptime option: Option,
-    value: ?*const option.InType(),
+    value: option.InType(),
 ) Result {
-    const wrapper = terminal_ orelse return .invalid_value;
     switch (option) {
-        .userdata => wrapper.effects.userdata = if (value) |v| v.* else null,
-        .write_pty => wrapper.effects.write_pty = if (value) |v| v.* else null,
-        .bell => wrapper.effects.bell = if (value) |v| v.* else null,
-        .color_scheme => wrapper.effects.color_scheme = if (value) |v| v.* else null,
-        .device_attributes => wrapper.effects.device_attributes_cb = if (value) |v| v.* else null,
-        .enquiry => wrapper.effects.enquiry = if (value) |v| v.* else null,
-        .xtversion => wrapper.effects.xtversion = if (value) |v| v.* else null,
-        .title_changed => wrapper.effects.title_changed = if (value) |v| v.* else null,
-        .size_cb => wrapper.effects.size_cb = if (value) |v| v.* else null,
+        .userdata => wrapper.effects.userdata = @constCast(value),
+        .write_pty => wrapper.effects.write_pty = value,
+        .bell => wrapper.effects.bell = value,
+        .color_scheme => wrapper.effects.color_scheme = value,
+        .device_attributes => wrapper.effects.device_attributes_cb = value,
+        .enquiry => wrapper.effects.enquiry = value,
+        .xtversion => wrapper.effects.xtversion = value,
+        .title_changed => wrapper.effects.title_changed = value,
+        .size_cb => wrapper.effects.size_cb = value,
         .title => {
             const str = if (value) |v| v.ptr[0..v.len] else "";
             wrapper.terminal.setTitle(str) catch return .out_of_memory;
@@ -386,10 +387,39 @@ pub fn resize(
     terminal_: Terminal,
     cols: size.CellCountInt,
     rows: size.CellCountInt,
+    cell_width_px: u32,
+    cell_height_px: u32,
 ) callconv(.c) Result {
-    const t: *ZigTerminal = (terminal_ orelse return .invalid_value).terminal;
+    const wrapper = terminal_ orelse return .invalid_value;
+    const t = wrapper.terminal;
     if (cols == 0 or rows == 0) return .invalid_value;
     t.resize(t.gpa(), cols, rows) catch return .out_of_memory;
+
+    // Update pixel sizes
+    t.width_px = std.math.mul(u32, cols, cell_width_px) catch std.math.maxInt(u32);
+    t.height_px = std.math.mul(u32, rows, cell_height_px) catch std.math.maxInt(u32);
+
+    // Disable synchronized output mode so that we show changes
+    // immediately for a resize. This is allowed by the spec.
+    t.modes.set(.synchronized_output, false);
+
+    // If we have in-band size reporting enabled, send a report.
+    if (t.modes.get(.in_band_size_reports)) in_band: {
+        const func = wrapper.effects.write_pty orelse break :in_band;
+
+        var buf: [1024]u8 = undefined;
+        var writer: std.Io.Writer = .fixed(&buf);
+        size_report.encode(&writer, .mode_2048, .{
+            .rows = rows,
+            .columns = cols,
+            .cell_width = cell_width_px,
+            .cell_height = cell_height_px,
+        }) catch break :in_band;
+
+        const data = writer.buffered();
+        func(@ptrCast(wrapper), wrapper.effects.userdata, data.ptr, data.len);
+    }
+
     return .success;
 }
 
@@ -444,6 +474,10 @@ pub const TerminalData = enum(c_int) {
     mouse_tracking = 11,
     title = 12,
     pwd = 13,
+    total_rows = 14,
+    scrollback_rows = 15,
+    width_px = 16,
+    height_px = 17,
 
     /// Output type expected for querying the data of the given kind.
     pub fn OutType(comptime self: TerminalData) type {
@@ -456,6 +490,8 @@ pub const TerminalData = enum(c_int) {
             .scrollbar => TerminalScrollbar,
             .cursor_style => style_c.Style,
             .title, .pwd => lib.String,
+            .total_rows, .scrollback_rows => usize,
+            .width_px, .height_px => u32,
         };
     }
 };
@@ -512,6 +548,10 @@ fn getTyped(
             const pwd = t.getPwd() orelse "";
             out.* = .{ .ptr = pwd.ptr, .len = pwd.len };
         },
+        .total_rows => out.* = t.screens.active.pages.total_rows,
+        .scrollback_rows => out.* = t.screens.active.pages.total_rows - t.rows,
+        .width_px => out.* = t.width_px,
+        .height_px => out.* = t.height_px,
     }
 
     return .success;
@@ -686,13 +726,13 @@ test "resize" {
     ));
     defer free(t);
 
-    try testing.expectEqual(Result.success, resize(t, 40, 12));
+    try testing.expectEqual(Result.success, resize(t, 40, 12, 9, 18));
     try testing.expectEqual(40, t.?.terminal.cols);
     try testing.expectEqual(12, t.?.terminal.rows);
 }
 
 test "resize null" {
-    try testing.expectEqual(Result.invalid_value, resize(null, 80, 24));
+    try testing.expectEqual(Result.invalid_value, resize(null, 80, 24, 9, 18));
 }
 
 test "resize invalid value" {
@@ -708,8 +748,8 @@ test "resize invalid value" {
     ));
     defer free(t);
 
-    try testing.expectEqual(Result.invalid_value, resize(t, 0, 24));
-    try testing.expectEqual(Result.invalid_value, resize(t, 80, 0));
+    try testing.expectEqual(Result.invalid_value, resize(t, 0, 24, 9, 18));
+    try testing.expectEqual(Result.invalid_value, resize(t, 80, 0, 9, 18));
 }
 
 test "mode_get and mode_set" {
@@ -1003,6 +1043,48 @@ test "get mouse_tracking" {
     try testing.expect(!tracking);
 }
 
+test "get total_rows" {
+    var t: Terminal = null;
+    try testing.expectEqual(Result.success, new(
+        &lib_alloc.test_allocator,
+        &t,
+        .{
+            .cols = 80,
+            .rows = 24,
+            .max_scrollback = 10_000,
+        },
+    ));
+    defer free(t);
+
+    var total: usize = undefined;
+    try testing.expectEqual(Result.success, get(t, .total_rows, @ptrCast(&total)));
+    try testing.expect(total >= 24);
+}
+
+test "get scrollback_rows" {
+    var t: Terminal = null;
+    try testing.expectEqual(Result.success, new(
+        &lib_alloc.test_allocator,
+        &t,
+        .{
+            .cols = 80,
+            .rows = 3,
+            .max_scrollback = 10_000,
+        },
+    ));
+    defer free(t);
+
+    var scrollback: usize = undefined;
+    try testing.expectEqual(Result.success, get(t, .scrollback_rows, @ptrCast(&scrollback)));
+    try testing.expectEqual(@as(usize, 0), scrollback);
+
+    // Write enough lines to push content into scrollback
+    vt_write(t, "line1\r\nline2\r\nline3\r\nline4\r\nline5\r\n", 34);
+
+    try testing.expectEqual(Result.success, get(t, .scrollback_rows, @ptrCast(&scrollback)));
+    try testing.expectEqual(@as(usize, 2), scrollback);
+}
+
 test "get invalid" {
     var t: Terminal = null;
     try testing.expectEqual(Result.success, new(
@@ -1090,10 +1172,8 @@ test "set write_pty callback" {
 
     // Set userdata and write_pty callback
     var sentinel: u8 = 42;
-    const ud: ?*anyopaque = @ptrCast(&sentinel);
-    try testing.expectEqual(Result.success, set(t, .userdata, @ptrCast(&ud)));
-    const cb: ?Effects.WritePtyFn = &S.writePty;
-    try testing.expectEqual(Result.success, set(t, .write_pty, @ptrCast(&cb)));
+    try testing.expectEqual(Result.success, set(t, .userdata, @ptrCast(&sentinel)));
+    try testing.expectEqual(Result.success, set(t, .write_pty, @ptrCast(&S.writePty)));
 
     // DECRQM for wraparound mode (mode 7, set by default) should trigger write_pty
     vt_write(t, "\x1B[?7$p", 6);
@@ -1141,8 +1221,7 @@ test "set write_pty null clears callback" {
     S.called = false;
 
     // Set then clear the callback
-    const cb: ?Effects.WritePtyFn = &S.writePty;
-    try testing.expectEqual(Result.success, set(t, .write_pty, @ptrCast(&cb)));
+    try testing.expectEqual(Result.success, set(t, .write_pty, @ptrCast(&S.writePty)));
     try testing.expectEqual(Result.success, set(t, .write_pty, null));
 
     vt_write(t, "\x1B[?7$p", 6);
@@ -1176,10 +1255,8 @@ test "set bell callback" {
 
     // Set userdata and bell callback
     var sentinel: u8 = 99;
-    const ud: ?*anyopaque = @ptrCast(&sentinel);
-    try testing.expectEqual(Result.success, set(t, .userdata, @ptrCast(&ud)));
-    const cb: ?Effects.BellFn = &S.bell;
-    try testing.expectEqual(Result.success, set(t, .bell, @ptrCast(&cb)));
+    try testing.expectEqual(Result.success, set(t, .userdata, @ptrCast(&sentinel)));
+    try testing.expectEqual(Result.success, set(t, .bell, @ptrCast(&S.bell)));
 
     // Single BEL
     vt_write(t, "\x07", 1);
@@ -1241,10 +1318,8 @@ test "set enquiry callback" {
     };
     defer S.deinit();
 
-    const write_cb: ?Effects.WritePtyFn = &S.writePty;
-    try testing.expectEqual(Result.success, set(t, .write_pty, @ptrCast(&write_cb)));
-    const enq_cb: ?Effects.EnquiryFn = &S.enquiry;
-    try testing.expectEqual(Result.success, set(t, .enquiry, @ptrCast(&enq_cb)));
+    try testing.expectEqual(Result.success, set(t, .write_pty, @ptrCast(&S.writePty)));
+    try testing.expectEqual(Result.success, set(t, .enquiry, @ptrCast(&S.enquiry)));
 
     // ENQ (0x05) should trigger the enquiry callback and write response via write_pty
     vt_write(t, "\x05", 1);
@@ -1302,10 +1377,8 @@ test "set xtversion callback" {
     };
     defer S.deinit();
 
-    const write_cb: ?Effects.WritePtyFn = &S.writePty;
-    try testing.expectEqual(Result.success, set(t, .write_pty, @ptrCast(&write_cb)));
-    const xtv_cb: ?Effects.XtversionFn = &S.xtversion;
-    try testing.expectEqual(Result.success, set(t, .xtversion, @ptrCast(&xtv_cb)));
+    try testing.expectEqual(Result.success, set(t, .write_pty, @ptrCast(&S.writePty)));
+    try testing.expectEqual(Result.success, set(t, .xtversion, @ptrCast(&S.xtversion)));
 
     // XTVERSION: CSI > q
     vt_write(t, "\x1B[>q", 4);
@@ -1343,8 +1416,7 @@ test "xtversion without callback reports default" {
     defer S.deinit();
 
     // Set write_pty but not xtversion — should get default "libghostty"
-    const write_cb: ?Effects.WritePtyFn = &S.writePty;
-    try testing.expectEqual(Result.success, set(t, .write_pty, @ptrCast(&write_cb)));
+    try testing.expectEqual(Result.success, set(t, .write_pty, @ptrCast(&S.writePty)));
 
     vt_write(t, "\x1B[>q", 4);
     try testing.expect(S.last_data != null);
@@ -1377,10 +1449,8 @@ test "set title_changed callback" {
     S.last_userdata = null;
 
     var sentinel: u8 = 77;
-    const ud: ?*anyopaque = @ptrCast(&sentinel);
-    try testing.expectEqual(Result.success, set(t, .userdata, @ptrCast(&ud)));
-    const cb: ?Effects.TitleChangedFn = &S.titleChanged;
-    try testing.expectEqual(Result.success, set(t, .title_changed, @ptrCast(&cb)));
+    try testing.expectEqual(Result.success, set(t, .userdata, @ptrCast(&sentinel)));
+    try testing.expectEqual(Result.success, set(t, .title_changed, @ptrCast(&S.titleChanged)));
 
     // OSC 2 ; title ST — set window title
     vt_write(t, "\x1B]2;Hello\x1B\\", 10);
@@ -1447,10 +1517,8 @@ test "set size callback" {
     };
     defer S.deinit();
 
-    const write_cb: ?Effects.WritePtyFn = &S.writePty;
-    try testing.expectEqual(Result.success, set(t, .write_pty, @ptrCast(&write_cb)));
-    const size_cb_fn: ?Effects.SizeFn = &S.sizeCb;
-    try testing.expectEqual(Result.success, set(t, .size_cb, @ptrCast(&size_cb_fn)));
+    try testing.expectEqual(Result.success, set(t, .write_pty, @ptrCast(&S.writePty)));
+    try testing.expectEqual(Result.success, set(t, .size_cb, @ptrCast(&S.sizeCb)));
 
     // CSI 18 t — report text area size in characters
     vt_write(t, "\x1B[18t", 5);
@@ -1520,10 +1588,8 @@ test "set device_attributes callback primary" {
     };
     defer S.deinit();
 
-    const write_cb: ?Effects.WritePtyFn = &S.writePty;
-    try testing.expectEqual(Result.success, set(t, .write_pty, @ptrCast(&write_cb)));
-    const da_cb: ?Effects.DeviceAttributesFn = &S.da;
-    try testing.expectEqual(Result.success, set(t, .device_attributes, @ptrCast(&da_cb)));
+    try testing.expectEqual(Result.success, set(t, .write_pty, @ptrCast(&S.writePty)));
+    try testing.expectEqual(Result.success, set(t, .device_attributes, @ptrCast(&S.da)));
 
     // CSI c — primary DA
     vt_write(t, "\x1B[c", 3);
@@ -1576,10 +1642,8 @@ test "set device_attributes callback secondary" {
     };
     defer S.deinit();
 
-    const write_cb: ?Effects.WritePtyFn = &S.writePty;
-    try testing.expectEqual(Result.success, set(t, .write_pty, @ptrCast(&write_cb)));
-    const da_cb: ?Effects.DeviceAttributesFn = &S.da;
-    try testing.expectEqual(Result.success, set(t, .device_attributes, @ptrCast(&da_cb)));
+    try testing.expectEqual(Result.success, set(t, .write_pty, @ptrCast(&S.writePty)));
+    try testing.expectEqual(Result.success, set(t, .device_attributes, @ptrCast(&S.da)));
 
     // CSI > c — secondary DA
     vt_write(t, "\x1B[>c", 4);
@@ -1632,10 +1696,8 @@ test "set device_attributes callback tertiary" {
     };
     defer S.deinit();
 
-    const write_cb: ?Effects.WritePtyFn = &S.writePty;
-    try testing.expectEqual(Result.success, set(t, .write_pty, @ptrCast(&write_cb)));
-    const da_cb: ?Effects.DeviceAttributesFn = &S.da;
-    try testing.expectEqual(Result.success, set(t, .device_attributes, @ptrCast(&da_cb)));
+    try testing.expectEqual(Result.success, set(t, .write_pty, @ptrCast(&S.writePty)));
+    try testing.expectEqual(Result.success, set(t, .device_attributes, @ptrCast(&S.da)));
 
     // CSI = c — tertiary DA
     vt_write(t, "\x1B[=c", 4);
@@ -1671,8 +1733,7 @@ test "device_attributes without callback uses default" {
     };
     defer S.deinit();
 
-    const write_cb: ?Effects.WritePtyFn = &S.writePty;
-    try testing.expectEqual(Result.success, set(t, .write_pty, @ptrCast(&write_cb)));
+    try testing.expectEqual(Result.success, set(t, .write_pty, @ptrCast(&S.writePty)));
 
     // Without setting a device_attributes callback, DA1 should return the default
     vt_write(t, "\x1B[c", 3);
@@ -1712,10 +1773,8 @@ test "device_attributes callback returns false uses default" {
     };
     defer S.deinit();
 
-    const write_cb: ?Effects.WritePtyFn = &S.writePty;
-    try testing.expectEqual(Result.success, set(t, .write_pty, @ptrCast(&write_cb)));
-    const da_cb: ?Effects.DeviceAttributesFn = &S.da;
-    try testing.expectEqual(Result.success, set(t, .device_attributes, @ptrCast(&da_cb)));
+    try testing.expectEqual(Result.success, set(t, .write_pty, @ptrCast(&S.writePty)));
+    try testing.expectEqual(Result.success, set(t, .device_attributes, @ptrCast(&S.da)));
 
     // Callback returns false, should use default response
     vt_write(t, "\x1B[c", 3);
@@ -1813,6 +1872,189 @@ test "get title set via vt_write" {
     var title: lib.String = undefined;
     try testing.expectEqual(Result.success, get(t, .title, @ptrCast(&title)));
     try testing.expectEqualStrings("VT Title", title.ptr[0..title.len]);
+}
+
+test "resize updates pixel dimensions" {
+    var t: Terminal = null;
+    try testing.expectEqual(Result.success, new(
+        &lib_alloc.test_allocator,
+        &t,
+        .{
+            .cols = 80,
+            .rows = 24,
+            .max_scrollback = 0,
+        },
+    ));
+    defer free(t);
+
+    try testing.expectEqual(Result.success, resize(t, 100, 40, 9, 18));
+
+    const zt = t.?.terminal;
+    try testing.expectEqual(@as(u32, 100 * 9), zt.width_px);
+    try testing.expectEqual(@as(u32, 40 * 18), zt.height_px);
+}
+
+test "resize pixel overflow saturates" {
+    var t: Terminal = null;
+    try testing.expectEqual(Result.success, new(
+        &lib_alloc.test_allocator,
+        &t,
+        .{
+            .cols = 80,
+            .rows = 24,
+            .max_scrollback = 0,
+        },
+    ));
+    defer free(t);
+
+    try testing.expectEqual(Result.success, resize(t, 100, 40, std.math.maxInt(u32), std.math.maxInt(u32)));
+
+    const zt = t.?.terminal;
+    try testing.expectEqual(std.math.maxInt(u32), zt.width_px);
+    try testing.expectEqual(std.math.maxInt(u32), zt.height_px);
+}
+
+test "resize disables synchronized output" {
+    var t: Terminal = null;
+    try testing.expectEqual(Result.success, new(
+        &lib_alloc.test_allocator,
+        &t,
+        .{
+            .cols = 80,
+            .rows = 24,
+            .max_scrollback = 0,
+        },
+    ));
+    defer free(t);
+
+    const zt = t.?.terminal;
+    zt.modes.set(.synchronized_output, true);
+
+    try testing.expectEqual(Result.success, resize(t, 100, 40, 9, 18));
+    try testing.expect(!zt.modes.get(.synchronized_output));
+}
+
+test "resize sends in-band size report" {
+    var t: Terminal = null;
+    try testing.expectEqual(Result.success, new(
+        &lib_alloc.test_allocator,
+        &t,
+        .{
+            .cols = 80,
+            .rows = 24,
+            .max_scrollback = 0,
+        },
+    ));
+    defer free(t);
+
+    const S = struct {
+        var last_data: ?[]u8 = null;
+
+        fn deinit() void {
+            if (last_data) |d| testing.allocator.free(d);
+            last_data = null;
+        }
+
+        fn writePty(_: Terminal, _: ?*anyopaque, ptr: [*]const u8, len: usize) callconv(.c) void {
+            if (last_data) |d| testing.allocator.free(d);
+            last_data = testing.allocator.dupe(u8, ptr[0..len]) catch @panic("OOM");
+        }
+    };
+    defer S.deinit();
+
+    try testing.expectEqual(Result.success, set(t, .write_pty, @ptrCast(&S.writePty)));
+
+    // Enable in-band size reports (mode 2048)
+    t.?.terminal.modes.set(.in_band_size_reports, true);
+
+    try testing.expectEqual(Result.success, resize(t, 100, 40, 9, 18));
+
+    // Expected: \x1B[48;rows;cols;height_px;width_pxt
+    // height_px = 40*18 = 720, width_px = 100*9 = 900
+    try testing.expect(S.last_data != null);
+    try testing.expectEqualStrings("\x1B[48;40;100;720;900t", S.last_data.?);
+}
+
+test "resize no size report without mode 2048" {
+    var t: Terminal = null;
+    try testing.expectEqual(Result.success, new(
+        &lib_alloc.test_allocator,
+        &t,
+        .{
+            .cols = 80,
+            .rows = 24,
+            .max_scrollback = 0,
+        },
+    ));
+    defer free(t);
+
+    const S = struct {
+        var called: bool = false;
+        fn writePty(_: Terminal, _: ?*anyopaque, _: [*]const u8, _: usize) callconv(.c) void {
+            called = true;
+        }
+    };
+    S.called = false;
+
+    try testing.expectEqual(Result.success, set(t, .write_pty, @ptrCast(&S.writePty)));
+
+    // in_band_size_reports is off by default
+    try testing.expectEqual(Result.success, resize(t, 100, 40, 9, 18));
+    try testing.expect(!S.called);
+}
+
+test "resize in-band report without write_pty callback" {
+    var t: Terminal = null;
+    try testing.expectEqual(Result.success, new(
+        &lib_alloc.test_allocator,
+        &t,
+        .{
+            .cols = 80,
+            .rows = 24,
+            .max_scrollback = 0,
+        },
+    ));
+    defer free(t);
+
+    // Enable mode 2048 but don't set a write_pty callback — should not crash
+    t.?.terminal.modes.set(.in_band_size_reports, true);
+    try testing.expectEqual(Result.success, resize(t, 100, 40, 9, 18));
+}
+
+test "resize null terminal" {
+    try testing.expectEqual(Result.invalid_value, resize(null, 100, 40, 9, 18));
+}
+
+test "resize zero cols" {
+    var t: Terminal = null;
+    try testing.expectEqual(Result.success, new(
+        &lib_alloc.test_allocator,
+        &t,
+        .{
+            .cols = 80,
+            .rows = 24,
+            .max_scrollback = 0,
+        },
+    ));
+    defer free(t);
+
+    try testing.expectEqual(Result.invalid_value, resize(t, 0, 40, 9, 18));
+}
+
+test "resize zero rows" {
+    var t: Terminal = null;
+    try testing.expectEqual(Result.success, new(
+        &lib_alloc.test_allocator,
+        &t,
+        .{
+            .cols = 80,
+            .rows = 24,
+            .max_scrollback = 0,
+        },
+    ));
+    defer free(t);
+
+    try testing.expectEqual(Result.invalid_value, resize(t, 100, 0, 9, 18));
 }
 
 test "grid_ref out of bounds" {
