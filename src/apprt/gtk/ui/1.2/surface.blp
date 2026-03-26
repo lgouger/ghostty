@@ -220,9 +220,10 @@ Overlay terminal_page {
   }
 
   [overlay]
-  // Same CSS class as splits; dims the surface when the window is inactive.
+  // Same CSS class as splits; dims single-pane tabs when the window is inactive.
+  // Surfaces in a split use the unfocused-split overlay only (no stacking).
   Revealer {
-    reveal-child: bind $should_unfocused_window_be_shown(search_overlay.active, template.window-active) as <bool>;
+    reveal-child: bind $should_unfocused_window_be_shown(search_overlay.active, template.window-active, template.is-split) as <bool>;
     transition-duration: 0;
     can-focus: false;
     can-target: false;

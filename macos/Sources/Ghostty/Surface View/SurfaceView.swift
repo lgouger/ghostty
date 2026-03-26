@@ -234,9 +234,10 @@ extension Ghostty {
                     }
                 }
 
-                // When the window does not have focus, dim every surface using the same
-                // unfocused-split-opacity / unfocused-split-fill settings as splits.
-                if !windowFocus {
+                // When the window does not have focus and this surface is not in a split,
+                // dim using the same unfocused-split-opacity / unfocused-split-fill as splits.
+                // Split layouts rely on the split overlay only so we never double-dim.
+                if !windowFocus && !isSplit {
                     let overlayOpacity = ghostty.config.unfocusedSplitOpacity
                     if overlayOpacity > 0 {
                         Rectangle()
