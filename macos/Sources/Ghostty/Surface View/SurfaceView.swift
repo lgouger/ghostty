@@ -234,6 +234,18 @@ extension Ghostty {
                     }
                 }
 
+                // When the window does not have focus, dim every surface using the same
+                // unfocused-split-opacity / unfocused-split-fill settings as splits.
+                if !windowFocus {
+                    let overlayOpacity = ghostty.config.unfocusedSplitOpacity
+                    if overlayOpacity > 0 {
+                        Rectangle()
+                            .fill(ghostty.config.unfocusedSplitFill)
+                            .allowsHitTesting(false)
+                            .opacity(overlayOpacity)
+                    }
+                }
+
                 #if canImport(AppKit)
                 // Grab handle for dragging the window. We want this to appear at the very
                 // top Z-index os it isn't faded by the unfocused overlay.

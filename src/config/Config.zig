@@ -1059,9 +1059,10 @@ palette: Palette = .{},
 /// doing so.
 @"background-blur": BackgroundBlur = .false,
 
-/// The opacity level (opposite of transparency) of an unfocused split.
-/// Unfocused splits by default are slightly faded out to make it easier to see
-/// which split is focused. To disable this feature, set this value to 1.
+/// The opacity level (opposite of transparency) used to dim unfocused splits and,
+/// on supported app runtimes (macOS and GTK), surfaces in a window that has lost
+/// focus. Unfocused splits by default are slightly faded out to make it easier to
+/// see which split is focused. To disable dimming entirely, set this value to 1.
 ///
 /// A value of 1 is fully opaque and a value of 0 is fully transparent. Because
 /// "0" is not useful (it makes the window look very weird), the minimum value
@@ -1070,9 +1071,10 @@ palette: Palette = .{},
 /// valid value.
 @"unfocused-split-opacity": f64 = 0.7,
 
-/// The color to dim the unfocused split. Unfocused splits are dimmed by
-/// rendering a semi-transparent rectangle over the split. This sets the color of
-/// that rectangle and can be used to carefully control the dimming effect.
+/// The color to dim unfocused splits and unfocused windows (macOS and GTK), using
+/// the same overlay as for splits. Unfocused splits are dimmed by rendering a
+/// semi-transparent rectangle over the split. This sets the color of that
+/// rectangle and can be used to carefully control the dimming effect.
 ///
 /// This will default to the background color.
 ///

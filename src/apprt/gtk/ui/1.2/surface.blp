@@ -219,6 +219,22 @@ Overlay terminal_page {
     }
   }
 
+  [overlay]
+  // Same CSS class as splits; dims the surface when the window is inactive.
+  Revealer {
+    reveal-child: bind $should_unfocused_window_be_shown(search_overlay.active, template.window-active) as <bool>;
+    transition-duration: 0;
+    can-focus: false;
+    can-target: false;
+    focusable: false;
+
+    DrawingArea {
+      styles [
+        "unfocused-split",
+      ]
+    }
+  }
+
   DropTarget drop_target {
     drop => $drop();
     actions: copy | move;

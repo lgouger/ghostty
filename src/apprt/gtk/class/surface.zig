@@ -309,6 +309,24 @@ pub const Surface = extern struct {
             );
         };
 
+        pub const @"window-active" = struct {
+            pub const name = "window-active";
+            const impl = gobject.ext.defineProperty(
+                name,
+                Self,
+                bool,
+                .{
+                    .default = true,
+                    .accessor = gobject.ext.privateFieldAccessor(
+                        Self,
+                        Private,
+                        &Private.offset,
+                        "window_active",
+                    ),
+                },
+            );
+        };
+
         pub const hadjustment = struct {
             pub const name = "hadjustment";
             const impl = gobject.ext.defineProperty(
@@ -668,6 +686,10 @@ pub const Surface = extern struct {
         // unfocused-split-* options
         is_split: bool = false,
 
+        /// True while the parent GtkWindow reports is-active (window has focus).
+        window_active: bool = true,
+        window_active_notify_connected: bool = false,
+
         action_group: ?*gio.SimpleActionGroup = null,
 
         // Gtk.Scrollable interface adjustments
@@ -829,6 +851,15 @@ pub const Surface = extern struct {
         is_split: c_int,
     ) callconv(.c) c_int {
         return @intFromBool(search_active == 0 and focused == 0 and is_split != 0);
+    }
+
+    /// Same overlay styling as splits; shown when the window is inactive.
+    fn closureShouldUnfocusedWindowBeShown(
+        _: *Self,
+        search_active: c_int,
+        window_active: c_int,
+    ) callconv(.c) c_int {
+        return @intFromBool(search_active == 0 and window_active == 0);
     }
 
     pub fn toggleFullscreen(self: *Self) void {
@@ -3211,6 +3242,43 @@ pub const Surface = extern struct {
         // create a strong reference back to ourself and we want to be
         // able to release that in unrealize.
         priv.im_context.as(gtk.IMContext).setClientWidget(self.as(gtk.Widget));
+
+        self.connectWindowActiveSignal();
+    }
+
+    fn connectWindowActiveSignal(self: *Self) void {
+        const priv = self.private();
+        if (priv.window_active_notify_connected) return;
+
+        const widget = self.as(gtk.Widget);
+        const window = ext.getAncestor(Window, widget) orelse return;
+
+        priv.window_active = window.as(gtk.Window).isActive() != 0;
+        priv.window_active_notify_connected = true;
+
+        _ = gobject.Object.signals.notify.connect(
+            window.as(gobject.Object),
+            *Self,
+            windowActiveChanged,
+            self,
+            .{ .detail = "is-active" },
+        );
+    }
+
+    fn windowActiveChanged(
+        _: *gobject.Object,
+        _: *gobject.ParamSpec,
+        self: *Self,
+    ) callconv(.c) void {
+        const priv = self.private();
+        const widget = self.as(gtk.Widget);
+        const window = ext.getAncestor(Window, widget) orelse return;
+        const is_active = window.as(gtk.Window).isActive() != 0;
+
+        if (priv.window_active != is_active) {
+            priv.window_active = is_active;
+            self.as(gobject.Object).notify("window-active");
+        }
     }
 
     fn glareaUnrealize(
@@ -3569,6 +3637,7 @@ pub const Surface = extern struct {
             class.bindTemplateCallback("notify_vadjustment", &propVAdjustment);
             class.bindTemplateCallback("should_border_be_shown", &closureShouldBorderBeShown);
             class.bindTemplateCallback("should_unfocused_split_be_shown", &closureShouldUnfocusedSplitBeShown);
+            class.bindTemplateCallback("should_unfocused_window_be_shown", &closureShouldUnfocusedWindowBeShown);
             class.bindTemplateCallback("search_stop", &searchStop);
             class.bindTemplateCallback("search_changed", &searchChanged);
             class.bindTemplateCallback("search_next_match", &searchNextMatch);
@@ -3594,6 +3663,7 @@ pub const Surface = extern struct {
                 properties.@"title-override".impl,
                 properties.zoom.impl,
                 properties.@"is-split".impl,
+                properties.@"window-active".impl,
                 properties.readonly.impl,
 
                 // For Gtk.Scrollable
