@@ -45,6 +45,7 @@ bitigchi
 bkircher
 bo2themax
 brentschroeter
+brianc442
 cespare
 charliie-dev
 chernetskyi
@@ -54,6 +55,7 @@ crayxt
 craziestowl
 curtismoncoq
 d-dudas
+-daedaevibin
 daiimus
 damyanbogoev
 danulqua
@@ -91,6 +93,7 @@ heddxh heddxh
 hlcfan
 hqnna
 hulet
+i999rri
 icodesign
 j0hnm4r5
 jacobsandlund
@@ -103,6 +106,7 @@ johnslavik
 josephmart
 jparise
 juniqlim
+karesansui-u
 kawarimidoll
 kenvandine
 khipp
@@ -137,16 +141,19 @@ mischief
 mitchellh
 miupa
 molechowski
+mrconnorkenway
 mrmage
 mtak
 natesmyth
 neo773
+nicholas-ochoa
 nicosuave
 nmggithub
 noib3
 nwehg
 ocean6954
 oshdubh
+paaloeye
 pan93412
 pangoraw
 pauley-unsaturated
