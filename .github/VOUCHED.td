@@ -37,6 +37,7 @@ anmitalidev
 anthonyzhoon
 atomk
 balazs-szucs
+barutsrb
 bennettp123
 benodiwal
 bernsno
@@ -121,6 +122,7 @@ laxystem
 liby
 linustalacko
 lonsagisawa
+louisunlimited
 luisnquin
 lynicis
 mac0ne
