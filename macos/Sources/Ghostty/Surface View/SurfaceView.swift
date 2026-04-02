@@ -450,10 +450,11 @@ extension Ghostty {
                         }
                     }
 #if canImport(AppKit)
-                    .onExitCommand(perform: onResignFirstResponder)
-                    .onChange(of: isSearchFieldFocused) {  newValue in
-                        if !newValue {
-                            onResignFirstResponder()
+                    .onExitCommand {
+                        if searchState.needle.isEmpty {
+                            onClose()
+                        } else {
+                            Ghostty.moveFocus(to: surfaceView)
                         }
                     }
 #endif
@@ -532,15 +533,7 @@ extension Ghostty {
                 )
             }
         }
-#if canImport(AppKit)
-        private func onResignFirstResponder() {
-            if searchState.needle.isEmpty {
-                onClose()
-            } else {
-                Ghostty.moveFocus(to: surfaceView)
-            }
-        }
-#endif
+
         private var clipShape: some Shape {
             if #available(iOS 26.0, macOS 26.0, *) {
                 return ConcentricRectangle(corners: .concentric(minimum: 8), isUniform: true)
