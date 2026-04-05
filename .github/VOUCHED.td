@@ -82,6 +82,7 @@ faukah
 filip7
 flou
 francescarpi
+fru1tworld
 gagbo
 ghokun
 gmile
@@ -102,12 +103,14 @@ icodesign
 j0hnm4r5
 jacobsandlund
 jake-stewart
+jamylak
 jarred-sumner
 jcollie
 jesusvazquez
 jguthmiller
 jmcgover
 johnslavik
+jordandm
 josephmart
 jparise
 juniqlim
