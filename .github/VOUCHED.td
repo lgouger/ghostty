@@ -117,6 +117,7 @@ juniqlim
 justonia
 karesansui-u
 kawarimidoll
+kayleung
 kenvandine
 khipp
 kirwiisp
@@ -156,6 +157,7 @@ mrmage
 mtak
 natesmyth
 neo773
+neurosnap
 nicholas-ochoa
 nicosuave
 nmggithub
