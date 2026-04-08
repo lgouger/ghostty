@@ -120,6 +120,7 @@ kawarimidoll
 kayleung
 kenvandine
 khipp
+kierancanter
 kirwiisp
 kjvdven
 kloneets
@@ -152,6 +153,7 @@ mischief
 mitchellh
 miupa
 molechowski
+moonmao42
 mrconnorkenway
 mrmage
 mtak
@@ -193,6 +195,7 @@ seruman
 silveirapf
 slsrepo
 sunshine-syz
+tbrundige
 tdgroot
 tdslot
 ticclick
