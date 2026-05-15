@@ -46,6 +46,7 @@ anmitalidev
 anthonyzhoon
 athaapa
 atomk
+b1nar10
 balazs-szucs
 barutsrb
 bch
@@ -246,6 +247,7 @@ tweedbeetle
 uhojin
 unphased
 uzaaft
+vancluever
 vaughanandrews
 viruslobster
 vlsi
@@ -254,6 +256,7 @@ wyounas
 yabbal
 yamshta
 ydah
+-zaviro
 zenyr
 zeshi09
 zubb
