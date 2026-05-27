@@ -69,6 +69,7 @@ cmwetherell
 crayxt
 craziestowl
 curtismoncoq
+-cznorth Automated advertising + likely AI communication
 d-dudas
 -daedaevibin
 daiimus
@@ -157,6 +158,7 @@ kristofersoler
 kylesower
 laxystem
 lebdron
+lepips
 liby
 linustalacko
 lonsagisawa
@@ -196,6 +198,7 @@ neo773
 neurosnap
 nicholas-ochoa
 nicosuave
+nikicat
 nmggithub
 noib3
 nolinmcfarland
