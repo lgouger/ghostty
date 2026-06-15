@@ -33,6 +33,7 @@ adrum
 agoodkind
 aindriu80
 ajiblock
+ajr-khll
 akimiojr
 alaasdk
 alanmoyano
@@ -130,6 +131,7 @@ illiakrauchanka
 j0hnm4r5
 jacobsandlund
 jake-stewart
+jamesarch
 jamylak
 jarred-sumner
 jcollie
@@ -238,6 +240,7 @@ rmengelbrecht
 rmunn
 rockorager
 rpfaeffle
+sahilkmishra
 samasaur1
 sandydoo
 secrus
