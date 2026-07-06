@@ -5,6 +5,7 @@ const buildpkg = @import("build_info.zig");
 pub const allocator = @import("allocator.zig");
 pub const cell = @import("cell.zig");
 pub const color = @import("color.zig");
+pub const color_scheme = @import("color_scheme.zig");
 pub const focus = @import("focus.zig");
 pub const formatter = @import("formatter.zig");
 pub const grid_ref = @import("grid_ref.zig");
@@ -57,6 +58,18 @@ pub const osc_command_type = osc.commandType;
 pub const osc_command_data = osc.commandData;
 
 pub const color_rgb_get = color.rgb_get;
+pub const color_contrast = color.contrast;
+pub const color_luminance = color.luminance;
+pub const color_parse = color.parse;
+pub const color_parse_palette_entry = color.parse_palette_entry;
+pub const color_parse_x11 = color.parse_x11;
+pub const color_palette_default = color.palette_default;
+pub const color_palette_generate = color.palette_generate;
+pub const color_perceived_luminance = color.perceived_luminance;
+pub const color_x11_name_count = color.x11_name_count;
+pub const color_x11_names = color.x11_names;
+
+pub const color_scheme_report_encode = color_scheme.report_encode;
 
 pub const focus_encode = focus.encode;
 
@@ -200,6 +213,7 @@ pub const terminal_point_from_grid_ref = terminal.point_from_grid_ref;
 pub const type_json = types.get_json;
 
 pub const unicode_codepoint_width = unicode.codepoint_width;
+pub const unicode_grapheme_width = unicode.grapheme_width;
 
 pub const grid_ref_cell = grid_ref.grid_ref_cell;
 pub const grid_ref_row = grid_ref.grid_ref_row;
@@ -217,6 +231,7 @@ test {
     _ = buildpkg;
     _ = cell;
     _ = color;
+    _ = color_scheme;
     _ = grid_ref;
     _ = grid_ref_tracked;
     _ = kitty_graphics;

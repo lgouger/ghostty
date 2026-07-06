@@ -203,6 +203,7 @@ mrconnorkenway
 mrmage
 mtak
 mustafa0x
+nagato-yuzuru
 natesmyth
 neo773
 neurosnap
@@ -222,6 +223,7 @@ paaloeye
 pan93412
 pangoraw
 pauley-unsaturated
+pearkes
 peilingjiang
 peterdavehello
 philocalyst
@@ -257,6 +259,7 @@ seyoungjeong
 silveirapf
 slsrepo
 sunshine-syz
+tasselx
 tbrundige
 tdgroot
 tdslot

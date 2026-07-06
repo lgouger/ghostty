@@ -138,6 +138,7 @@ pub const unicode = struct {
     const unicode_pkg = @import("unicode/main.zig");
 
     pub const codepointWidth = unicode_pkg.codepointWidth;
+    pub const graphemeWidth = unicode_pkg.graphemeWidth;
 };
 
 comptime {
@@ -190,11 +191,13 @@ comptime {
         @export(&c.osc_end, .{ .name = "ghostty_osc_end" });
         @export(&c.osc_command_type, .{ .name = "ghostty_osc_command_type" });
         @export(&c.osc_command_data, .{ .name = "ghostty_osc_command_data" });
+        @export(&c.color_scheme_report_encode, .{ .name = "ghostty_color_scheme_report_encode" });
         @export(&c.focus_encode, .{ .name = "ghostty_focus_encode" });
         @export(&c.mode_report_encode, .{ .name = "ghostty_mode_report_encode" });
         @export(&c.paste_is_safe, .{ .name = "ghostty_paste_is_safe" });
         @export(&c.paste_encode, .{ .name = "ghostty_paste_encode" });
         @export(&c.unicode_codepoint_width, .{ .name = "ghostty_unicode_codepoint_width" });
+        @export(&c.unicode_grapheme_width, .{ .name = "ghostty_unicode_grapheme_width" });
         @export(&c.size_report_encode, .{ .name = "ghostty_size_report_encode" });
         @export(&c.style_default, .{ .name = "ghostty_style_default" });
         @export(&c.style_is_default, .{ .name = "ghostty_style_is_default" });
@@ -205,6 +208,16 @@ comptime {
         @export(&c.row_get, .{ .name = "ghostty_row_get" });
         @export(&c.row_get_multi, .{ .name = "ghostty_row_get_multi" });
         @export(&c.color_rgb_get, .{ .name = "ghostty_color_rgb_get" });
+        @export(&c.color_contrast, .{ .name = "ghostty_color_contrast" });
+        @export(&c.color_luminance, .{ .name = "ghostty_color_luminance" });
+        @export(&c.color_parse, .{ .name = "ghostty_color_parse" });
+        @export(&c.color_parse_palette_entry, .{ .name = "ghostty_color_parse_palette_entry" });
+        @export(&c.color_parse_x11, .{ .name = "ghostty_color_parse_x11" });
+        @export(&c.color_palette_default, .{ .name = "ghostty_color_palette_default" });
+        @export(&c.color_palette_generate, .{ .name = "ghostty_color_palette_generate" });
+        @export(&c.color_perceived_luminance, .{ .name = "ghostty_color_perceived_luminance" });
+        @export(&c.color_x11_name_count, .{ .name = "ghostty_color_x11_name_count" });
+        @export(&c.color_x11_names, .{ .name = "ghostty_color_x11_names" });
         @export(&c.sgr_new, .{ .name = "ghostty_sgr_new" });
         @export(&c.sgr_free, .{ .name = "ghostty_sgr_free" });
         @export(&c.sgr_reset, .{ .name = "ghostty_sgr_reset" });
