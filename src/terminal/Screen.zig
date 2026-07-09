@@ -13,6 +13,7 @@ const tripwire = @import("../tripwire.zig");
 const unicode = @import("../unicode/main.zig");
 const Selection = @import("Selection.zig");
 const PageList = @import("PageList.zig");
+const selection_codepoints = @import("selection_codepoints.zig");
 const StringMap = @import("StringMap.zig");
 const ScreenFormatter = @import("formatter.zig").ScreenFormatter;
 const osc = @import("osc.zig");
@@ -112,7 +113,7 @@ pub const SemanticPrompt = struct {
 
     pub const SemanticClick = union(enum) {
         none,
-        click_events,
+        click_events: osc.semantic_prompt.ClickEvents,
         cl: osc.semantic_prompt.Click,
     };
 };
@@ -255,7 +256,16 @@ pub const Options = struct {
 
     /// The total storage limit for Kitty images in bytes for this
     /// screen. Kitty image storage is per-screen.
-    kitty_image_storage_limit: usize = 320 * 1000 * 1000, // 320MB
+    kitty_image_storage_limit: usize = switch (build_options.artifact) {
+        .ghostty => 320 * 1000 * 1000, // 320MB
+        .lib => 10 * 1000 * 1000, // 10MB
+    },
+
+    /// The limits for what medium types are allowed for Kitty image loading.
+    kitty_image_loading_limits: if (build_options.kitty_graphics)
+        kitty.graphics.LoadingImage.Limits
+    else
+        void = if (build_options.kitty_graphics) .direct else {},
 
     /// A simple, default terminal. If you rely on specific dimensions or
     /// scrollback (or lack of) then do not use this directly. This is just
@@ -313,6 +323,7 @@ pub fn init(
             &result,
             opts.kitty_image_storage_limit,
         ) catch unreachable;
+        result.kitty_images.image_limits = opts.kitty_image_loading_limits;
     }
 
     return result;
@@ -1044,6 +1055,155 @@ fn cursorScrollAboveRotate(self: *Screen) !void {
     self.cursor.page_cell = page_rac.cell;
 }
 
+/// Scroll a full-width scroll region that ends at the cursor row up by
+/// one row. The cursor must be on the bottom row of the region. `limit`
+/// is the number of rows in the region above the cursor (region height
+/// minus one) and must be at least 1.
+///
+/// The top row of the region is discarded (NOT moved into scrollback).
+/// All other rows in the region shift up by one and the cursor row
+/// becomes a blank row, filled with the current background color (like
+/// other scroll operations such as deleteLines).
+///
+/// The cursor stays at the same screen position (the new blank row).
+/// Content outside of the region is unmodified.
+///
+/// This is a very hot path for scroll region usage (e.g. a program
+/// on the alt screen using DECSTBM and scrolling via LF/IND) so this
+/// is optimized for the common case where the full region is within
+/// a single page.
+pub fn cursorScrollRegionUp(self: *Screen, limit: usize) !void {
+    assert(limit >= 1);
+    assert(self.cursor.y >= limit);
+    defer self.assertIntegrity();
+
+    const pin: *Pin = self.cursor.page_pin;
+
+    // If the region crosses a page boundary we take a slower path. This
+    // is rare: it requires the active area to span multiple pages with
+    // the split point inside the scroll region.
+    if (pin.y < limit) return try self.cursorScrollRegionUpSlow(limit);
+
+    // Fast path: the entire region is in a single page. We can clear
+    // the top row and rotate it down to the cursor row, updating any
+    // tracked pins along the way.
+    const page: *Page = &pin.node.data;
+    const rows = page.rows.ptr(page.memory.ptr)[pin.y - limit ..][0 .. limit + 1];
+
+    // Clear the erased (top) row.
+    {
+        const row: *Row = &rows[0];
+
+        // Whether our blank cell is a plain zero cell. This is true
+        // unless the cursor has a background color set (see blankCell).
+        const blank_is_zero = self.cursor.style_id == style.default_id or
+            self.cursor.style.bg_color == .none;
+
+        if (!row.managedMemory() and blank_is_zero) {
+            // Hot path: the row has no managed memory (styles,
+            // graphemes, hyperlinks) and our blank is zero so this is
+            // a straight zero fill. This is the overwhelmingly common
+            // case for scroll region usage.
+            const cells = page.getCells(row);
+            @memset(@as([]u64, @ptrCast(cells)), 0);
+        } else {
+            // The generic clear handles managed memory and fills the
+            // row with our blank cell, preserving the background color.
+            self.clearCells(page, row, page.getCells(row));
+        }
+    }
+
+    // Rotate the region rows so the now-blank top row moves to the
+    // bottom (the cursor row) and everything else shifts up by one.
+    fastmem.rotateOnce(Row, rows);
+
+    // Mark the whole page as dirty.
+    //
+    // Technically we only need to mark the rotated rows but this is
+    // a hot function, so we want to minimize work.
+    page.dirty = true;
+
+    // If our viewport is a pin and it's within the rotated region
+    // then we need to shift its cached row offset up. See
+    // PageList.eraseRowBounded for details; this mirrors that logic.
+    if (self.pages.viewport == .pin) viewport: {
+        if (self.pages.viewport_pin_row_offset) |*v| {
+            const p = self.pages.viewport_pin;
+            if (p.node != pin.node or
+                p.y < pin.y - limit or
+                p.y > pin.y or
+                p.y == 0) break :viewport;
+            v.* -= 1;
+        }
+    }
+
+    // Update tracked pins within the region since their rows moved up
+    // by one. The cursor's own pin is skipped because the cursor stays
+    // at the region bottom (the new blank row).
+    const pin_keys = self.pages.tracked_pins.keys();
+    for (pin_keys) |p| {
+        if (p.node != pin.node or
+            p == pin or
+            p.y < pin.y - limit or
+            p.y > pin.y) continue;
+        if (p.y == 0) p.x = 0 else p.y -= 1;
+    }
+
+    // The cursor pin is unchanged, but the Row structure at the pin
+    // position now contains the blank row, so we need to refresh our
+    // cached row/cell pointers. We compute them directly from the row
+    // slice we already have rather than going through the pin since
+    // this is a hot path.
+    const cursor_row: *Row = &rows[limit];
+    self.cursor.page_row = cursor_row;
+    self.cursor.page_cell = &page.getCells(cursor_row)[self.cursor.x];
+}
+
+/// Slow path for cursorScrollRegionUp: the scroll region spans
+/// multiple pages so we use the generic PageList erase machinery.
+fn cursorScrollRegionUpSlow(self: *Screen, limit: usize) !void {
+    // The call to eraseRowBounded below will move our tracked cursor
+    // pin up by one row since it is inside the erased region, but we
+    // don't actually want that: the cursor stays put, on the new blank
+    // row at the region bottom. We keep the old pin and put it back
+    // after, exactly like cursorDownScroll does for the no-scrollback
+    // case.
+    //
+    // This matters beyond performance: when the cursor is on the first
+    // row of a page, eraseRowBounded moves the tracked pin to the
+    // previous page. Moving the cursor back down with cursorDown would
+    // then cross pages via cursorChangePin, which migrates the cursor
+    // style refcount from a page that never held it, corrupting the
+    // style accounting.
+    const old_pin = self.cursor.page_pin.*;
+
+    try self.pages.eraseRowBounded(
+        .{ .active = .{ .y = @intCast(self.cursor.y - limit) } },
+        limit,
+    );
+
+    // We don't use `cursorChangePin` here because we aren't actually
+    // changing the pin, we're keeping it the same. Since the page
+    // never changes, the cursor's style ref stays valid and no style
+    // accounting needs to be updated.
+    self.cursor.page_pin.* = old_pin;
+
+    // We do, however, need to refresh the cached page row and cell,
+    // because the row contents at our pin position changed (it now
+    // contains the blank row).
+    const page_rac = self.cursor.page_pin.rowAndCell();
+    self.cursor.page_row = page_rac.row;
+    self.cursor.page_cell = page_rac.cell;
+
+    // eraseRowBounded clears the new row with zero cells so if our
+    // blank cell isn't zero (bg color is set) we need to fill it.
+    const blank = self.blankCell();
+    if (!blank.isZero()) {
+        const cells: [*]Cell = @ptrCast(self.cursor.page_cell);
+        @memset((cells - self.cursor.x)[0..self.pages.cols], blank);
+    }
+}
+
 /// Move the cursor down if we're not at the bottom of the screen. Otherwise
 /// scroll. Currently only used for testing.
 inline fn cursorDownOrScroll(self: *Screen) !void {
@@ -1302,19 +1462,21 @@ pub inline fn viewportIsBottom(self: Screen) bool {
 /// Erase the region specified by tl and br, inclusive. This will physically
 /// erase the rows meaning the memory will be reclaimed (if the underlying
 /// page is empty) and other rows will be shifted up.
-pub inline fn eraseRows(
+pub inline fn eraseHistory(
     self: *Screen,
-    tl: point.Point,
     bl: ?point.Point,
 ) void {
     defer self.assertIntegrity();
+    self.pages.eraseHistory(bl);
+    self.cursorReload();
+}
 
-    // Erase the rows
-    self.pages.eraseRows(tl, bl);
-
-    // Just to be safe, reset our cursor since it is possible depending
-    // on the points that our active area shifted so our pointers are
-    // invalid.
+pub inline fn eraseActive(
+    self: *Screen,
+    y: size.CellCountInt,
+) void {
+    defer self.assertIntegrity();
+    self.pages.eraseActive(y);
     self.cursorReload();
 }
 
@@ -1419,9 +1581,21 @@ pub fn clearCells(
     }
 
     if (row.styled) {
-        for (cells) |*cell| {
-            if (cell.hasStyling())
-                page.styles.release(page.memory, cell.style_id);
+        // Styled cells overwhelmingly come in runs sharing the same
+        // style (e.g. a colored status bar or a highlighted region),
+        // so group them and release each run with a single ref-count
+        // update rather than per cell.
+        var i: usize = 0;
+        while (i < cells.len) {
+            const id = cells[i].style_id;
+            if (id == style.default_id) {
+                i += 1;
+                continue;
+            }
+            var j = i + 1;
+            while (j < cells.len and cells[j].style_id == id) j += 1;
+            page.styles.releaseMultiple(page.memory, id, @intCast(j - i));
+            i = j;
         }
 
         // If we have no left/right scroll region we can be sure
@@ -1754,14 +1928,18 @@ pub inline fn resize(
         .rows = opts.rows,
         .cols = opts.cols,
         .reflow = opts.reflow,
-        .cursor = .{ .x = self.cursor.x, .y = self.cursor.y },
+        .cursor = .{
+            .x = self.cursor.x,
+            .y = self.cursor.y,
+            .pin = self.cursor.page_pin,
+        },
     });
 
     // If we have no scrollback and we shrunk our rows, we must explicitly
     // erase our history. This is because PageList always keeps at least
     // a page size of history.
     if (self.no_scrollback) {
-        self.pages.eraseRows(.{ .history = .{} }, null);
+        self.pages.eraseHistory(null);
     }
 
     // If our cursor was updated, we do a full reload so all our cursor
@@ -1974,6 +2152,12 @@ pub fn setAttribute(
 
         .unknown => return,
     }
+
+    // If the attribute didn't change our style then we can skip the
+    // style update entirely: our current style ID is already correct.
+    // This is a common case in the wild where programs re-assert the
+    // same style repeatedly (e.g. per span or per line).
+    if (self.cursor.style.eql(old_style)) return;
 
     try self.manualStyleUpdate();
 }
@@ -2500,7 +2684,7 @@ pub const SelectLine = struct {
 
     /// These are the codepoints to consider whitespace to trim
     /// from the ends of the selection.
-    whitespace: ?[]const u21 = &.{ 0, ' ', '\t' },
+    whitespace: ?[]const u21 = &selection_codepoints.default_line_whitespace,
 
     /// If true, line selection will consider semantic prompt
     /// state changing a boundary. State changing is ANY state
@@ -2636,10 +2820,10 @@ pub fn selectLine(self: *const Screen, opts: SelectLine) ?Selection {
             if (!cell.hasText()) continue;
 
             // Non-empty means we found it.
-            const this_whitespace = std.mem.indexOfAny(
+            const this_whitespace = std.mem.indexOfScalar(
                 u21,
                 whitespace,
-                &[_]u21{cell.content.codepoint},
+                cell.content.codepoint,
             ) != null;
             if (this_whitespace) continue;
 
@@ -2658,10 +2842,10 @@ pub fn selectLine(self: *const Screen, opts: SelectLine) ?Selection {
             if (!cell.hasText()) continue;
 
             // Non-empty means we found it.
-            const this_whitespace = std.mem.indexOfAny(
+            const this_whitespace = std.mem.indexOfScalar(
                 u21,
                 whitespace,
-                &[_]u21{cell.content.codepoint},
+                cell.content.codepoint,
             ) != null;
             if (this_whitespace) continue;
 
@@ -2782,10 +2966,10 @@ pub fn selectWord(
     if (!start_cell.hasText()) return null;
 
     // Determine if we are a boundary or not to determine what our boundary is.
-    const expect_boundary = std.mem.indexOfAny(
+    const expect_boundary = std.mem.indexOfScalar(
         u21,
         boundary_codepoints,
-        &[_]u21{start_cell.content.codepoint},
+        start_cell.content.codepoint,
     ) != null;
 
     // Go forwards to find our end boundary
@@ -2800,10 +2984,10 @@ pub fn selectWord(
             if (!cell.hasText()) break :end prev;
 
             // If we do not match our expected set, we hit a boundary
-            const this_boundary = std.mem.indexOfAny(
+            const this_boundary = std.mem.indexOfScalar(
                 u21,
                 boundary_codepoints,
-                &[_]u21{cell.content.codepoint},
+                cell.content.codepoint,
             ) != null;
             if (this_boundary != expect_boundary) break :end prev;
 
@@ -2837,10 +3021,10 @@ pub fn selectWord(
             if (!cell.hasText()) break :start prev;
 
             // If we do not match our expected set, we hit a boundary
-            const this_boundary = std.mem.indexOfAny(
+            const this_boundary = std.mem.indexOfScalar(
                 u21,
                 boundary_codepoints,
-                &[_]u21{cell.content.codepoint},
+                cell.content.codepoint,
             ) != null;
             if (this_boundary != expect_boundary) break :start prev;
 
@@ -3591,6 +3775,54 @@ test "Screen cursorCopy hyperlink deref" {
     try testing.expect(s2.cursor.hyperlink_id == 0);
 }
 
+test "Screen write regrows compacted page capacity" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var s = try Screen.init(alloc, .{
+        .cols = 80,
+        .rows = 24,
+        .max_scrollback = 0,
+    });
+    defer s.deinit();
+
+    // Compact the active page so every managed capacity dimension is
+    // zero, then reload the cursor since its cached row/cell pointers
+    // point into the replaced page.
+    {
+        const node = (try s.pages.compact(s.cursor.page_pin.node)).?;
+        try testing.expectEqual(0, node.data.capacity.styles);
+        try testing.expectEqual(0, node.data.capacity.grapheme_bytes);
+        try testing.expectEqual(0, node.data.capacity.string_bytes);
+        try testing.expectEqual(0, node.data.capacity.hyperlink_bytes);
+        s.cursorReload();
+    }
+
+    // Styled write: exercises the manualStyleUpdate single-retry
+    // path. Prior to increaseCapacity handling zero dimensions, the
+    // retry would fail and the style would be dropped.
+    try s.setAttribute(.{ .bold = {} });
+    try s.testWriteString("A");
+
+    // Grapheme write: exercises the appendGrapheme single-retry path.
+    // We can't use testWriteString here because it appends graphemes
+    // directly on the page without the capacity retry.
+    try s.testWriteString("a");
+    try s.appendGrapheme(s.cursorCellLeft(1), 0x0301);
+
+    // Hyperlink: exercises the startHyperlink retry loop, which used
+    // to loop forever when capacity growth from zero didn't grow.
+    try s.startHyperlink("https://example.com/", null);
+    try s.testWriteString("B");
+    s.endHyperlink();
+
+    // Verify the content landed on the page.
+    const page = &s.cursor.page_pin.node.data;
+    try testing.expect(page.styles.count() >= 1);
+    try testing.expect(page.hyperlink_set.count() >= 1);
+    try testing.expect(page.graphemeCount() >= 1);
+}
+
 test "Screen cursorCopy hyperlink deref new page" {
     const testing = std.testing;
     const alloc = testing.allocator;
@@ -3880,7 +4112,7 @@ test "Screen eraseRows history" {
         try testing.expectEqualStrings("1\n2\n3\n4\n5\n6", str);
     }
 
-    s.eraseRows(.{ .history = .{} }, null);
+    s.eraseHistory(null);
 
     {
         const str = try s.dumpStringAlloc(alloc, .{ .active = .{} });
@@ -3914,7 +4146,7 @@ test "Screen eraseRows history with more lines" {
         try testing.expectEqualStrings("A\nB\nC\n1\n2\n3\n4\n5\n6", str);
     }
 
-    s.eraseRows(.{ .history = .{} }, null);
+    s.eraseHistory(null);
 
     {
         const str = try s.dumpStringAlloc(alloc, .{ .active = .{} });
@@ -3943,7 +4175,7 @@ test "Screen eraseRows active partial" {
         try testing.expectEqualStrings("1\n2\n3", str);
     }
 
-    s.eraseRows(.{ .active = .{} }, .{ .active = .{ .y = 1 } });
+    s.eraseActive(1);
 
     {
         const str = try s.dumpStringAlloc(alloc, .{ .active = .{} });
@@ -4552,6 +4784,207 @@ test "Screen: scrolling moves selection" {
         try testing.expect(s.pages.pointFromPin(.active, sel.start()) == null);
         try testing.expect(s.pages.pointFromPin(.active, sel.end()) == null);
     }
+}
+
+test "Screen: cursorScrollRegionUp simple" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var s = try init(alloc, .{ .cols = 5, .rows = 5, .max_scrollback = 0 });
+    defer s.deinit();
+    try s.testWriteString("1ABCD\n2EFGH\n3IJKL\n4MNOP\n5QRST");
+
+    // Scroll a region ending at row 2 (zero-indexed) up by one. This
+    // emulates a scroll region of rows 0-2 with the cursor at the
+    // region bottom.
+    s.cursorAbsolute(1, 2);
+    try s.cursorScrollRegionUp(2);
+
+    // The cursor stays in place, on the new blank row.
+    try testing.expectEqual(@as(size.CellCountInt, 1), s.cursor.x);
+    try testing.expectEqual(@as(size.CellCountInt, 2), s.cursor.y);
+
+    // Rows in the region scrolled, rows below are unchanged, and
+    // nothing was moved into scrollback.
+    {
+        const contents = try s.dumpStringAlloc(alloc, .{ .screen = .{} });
+        defer alloc.free(contents);
+        try testing.expectEqualStrings("2EFGH\n3IJKL\n\n4MNOP\n5QRST", contents);
+    }
+}
+
+test "Screen: cursorScrollRegionUp moves selection" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var s = try init(alloc, .{ .cols = 5, .rows = 5, .max_scrollback = 0 });
+    defer s.deinit();
+    try s.testWriteString("1ABCD\n2EFGH\n3IJKL\n4MNOP\n5QRST");
+
+    // Select the second row.
+    try s.select(Selection.init(
+        s.pages.pin(.{ .active = .{ .x = 0, .y = 1 } }).?,
+        s.pages.pin(.{ .active = .{ .x = s.pages.cols - 1, .y = 1 } }).?,
+        false,
+    ));
+
+    s.cursorAbsolute(0, 2);
+    try s.cursorScrollRegionUp(2);
+
+    // Our selection should've moved up with its row.
+    {
+        const sel = s.selection.?;
+        try testing.expectEqual(point.Point{ .active = .{
+            .x = 0,
+            .y = 0,
+        } }, s.pages.pointFromPin(.active, sel.start()).?);
+        try testing.expectEqual(point.Point{ .active = .{
+            .x = s.pages.cols - 1,
+            .y = 0,
+        } }, s.pages.pointFromPin(.active, sel.end()).?);
+    }
+
+    {
+        const contents = try s.dumpStringAlloc(alloc, .{ .viewport = .{} });
+        defer alloc.free(contents);
+        try testing.expectEqualStrings("2EFGH\n3IJKL\n\n4MNOP\n5QRST", contents);
+    }
+}
+
+test "Screen: cursorScrollRegionUp region spans pages" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var s = try init(alloc, .{ .cols = 10, .rows = 5, .max_scrollback = 10 });
+    defer s.deinit();
+
+    // We need to get the cursor to a new page
+    const first_page_size = s.pages.pages.first.?.data.capacity.rows;
+    s.pages.pages.first.?.data.pauseIntegrityChecks(true);
+    for (0..first_page_size - 3) |_| try s.testWriteString("\n");
+    s.pages.pages.first.?.data.pauseIntegrityChecks(false);
+    try s.testWriteString("1A\n2B\n3C\n4D\n5E");
+
+    // At this point:
+    //      +----------+ = PAGE 0
+    //  ... :          :
+    //     +-------------+ ACTIVE
+    // 4305 |1A00000000| | 0
+    // 4306 |2B00000000| | 1
+    // 4307 |3C00000000| | 2
+    //      +----------+ :
+    //      +----------+ : = PAGE 1
+    //    0 |4D00000000| | 3
+    //      :^         : : = PIN 0
+    //    1 |5E00000000| | 4
+    //      +----------+ :
+    //     +-------------+
+
+    // Move the cursor to the first row of the second page and give it
+    // a non-default style. This is important: it verifies that the
+    // cursor's style ref stays accounted on the correct page even
+    // though eraseRowBounded moves the cursor's tracked pin across
+    // the page boundary.
+    s.cursorAbsolute(0, 3);
+    try s.setAttribute(.{ .bold = {} });
+    try testing.expect(s.cursor.page_pin.node == s.pages.pages.last.?);
+    try testing.expectEqual(@as(usize, 0), s.cursor.page_pin.y);
+
+    // Scroll a region of active rows 1-3 with the cursor at the region
+    // bottom. The region spans the page boundary so this exercises the
+    // slow path.
+    try s.cursorScrollRegionUp(2);
+
+    // The cursor stays in place, on the new blank row.
+    try testing.expectEqual(@as(size.CellCountInt, 0), s.cursor.x);
+    try testing.expectEqual(@as(size.CellCountInt, 3), s.cursor.y);
+
+    {
+        const contents = try s.dumpStringAlloc(alloc, .{ .viewport = .{} });
+        defer alloc.free(contents);
+        try testing.expectEqualStrings("1A\n3C\n4D\n\n5E", contents);
+    }
+
+    // Our cursor style must remain usable: write a styled cell and
+    // verify the style ref counting is intact on the cursor's page.
+    try s.testWriteString("X");
+    {
+        const page = &s.cursor.page_pin.node.data;
+        const styles = page.styles.count();
+        try testing.expectEqual(@as(usize, 1), styles);
+    }
+}
+
+test "Screen: cursorScrollRegionUp region spans pages with background SGR" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var s = try init(alloc, .{ .cols = 10, .rows = 5, .max_scrollback = 10 });
+    defer s.deinit();
+
+    // We need to get the cursor to a new page. See the previous test
+    // for a diagram of the page layout.
+    const first_page_size = s.pages.pages.first.?.data.capacity.rows;
+    s.pages.pages.first.?.data.pauseIntegrityChecks(true);
+    for (0..first_page_size - 3) |_| try s.testWriteString("\n");
+    s.pages.pages.first.?.data.pauseIntegrityChecks(false);
+    try s.testWriteString("1A\n2B\n3C\n4D\n5E");
+
+    s.cursorAbsolute(0, 3);
+    try s.setAttribute(.{ .direct_color_bg = .{ .r = 0xFF, .g = 0, .b = 0 } });
+    try testing.expect(s.cursor.page_pin.node == s.pages.pages.last.?);
+    try testing.expectEqual(@as(usize, 0), s.cursor.page_pin.y);
+
+    try s.cursorScrollRegionUp(2);
+
+    {
+        const contents = try s.dumpStringAlloc(alloc, .{ .viewport = .{} });
+        defer alloc.free(contents);
+        try testing.expectEqualStrings("1A\n3C\n4D\n\n5E", contents);
+    }
+
+    // The new blank row must be filled with our background color.
+    for (0..s.pages.cols) |x| {
+        const list_cell = s.pages.getCell(.{ .active = .{
+            .x = @intCast(x),
+            .y = 3,
+        } }).?;
+        try testing.expect(list_cell.cell.content_tag == .bg_color_rgb);
+        try testing.expectEqual(Cell.RGB{
+            .r = 0xFF,
+            .g = 0,
+            .b = 0,
+        }, list_cell.cell.content.color_rgb);
+    }
+}
+
+test "Screen: cursorScrollRegionUp with styled erased row" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var s = try init(alloc, .{ .cols = 5, .rows = 3, .max_scrollback = 0 });
+    defer s.deinit();
+
+    // Write a styled row at the top so the erased row has managed
+    // memory that must be released.
+    try s.setAttribute(.{ .bold = {} });
+    try s.testWriteString("1ABCD");
+    try s.setAttribute(.{ .unset = {} });
+    try s.testWriteString("\n2EFGH\n3IJKL");
+
+    s.cursorAbsolute(0, 2);
+    try s.cursorScrollRegionUp(2);
+
+    {
+        const contents = try s.dumpStringAlloc(alloc, .{ .screen = .{} });
+        defer alloc.free(contents);
+        try testing.expectEqualStrings("2EFGH\n3IJKL", contents);
+    }
+
+    // The style should be gone from the page since the only user
+    // was the erased row.
+    const page = &s.cursor.page_pin.node.data;
+    try testing.expectEqual(@as(usize, 0), page.styles.count());
 }
 
 test "Screen: scrolling moves viewport" {
@@ -5655,7 +6088,7 @@ test "Screen: clear history with no history" {
     defer s.deinit();
     try s.testWriteString("4ABCD\n5EFGH\n6IJKL");
     try testing.expect(s.pages.viewport == .active);
-    s.eraseRows(.{ .history = .{} }, null);
+    s.eraseHistory(null);
     try testing.expect(s.pages.viewport == .active);
     {
         // Test our contents rotated
@@ -5689,7 +6122,7 @@ test "Screen: clear history" {
         try testing.expectEqualStrings("1ABCD\n2EFGH\n3IJKL", contents);
     }
 
-    s.eraseRows(.{ .history = .{} }, null);
+    s.eraseHistory(null);
     try testing.expect(s.pages.viewport == .active);
     {
         // Test our contents rotated
@@ -6485,6 +6918,86 @@ test "Screen: resize more cols with populated scrollback" {
     }
 }
 
+test "Screen: resize more cols bounded scrollback keeps viewport valid" {
+    // Regression test for issue #12298.
+    //
+    // This needs to live at the Screen layer rather than PageList because the
+    // bad state only appears once Screen forwards the active cursor into the
+    // resize path. A direct PageList resize repro does not hit the same bug.
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var s = try init(alloc, .{
+        .cols = 2,
+        .rows = 10,
+        .max_scrollback = 10_000,
+    });
+    defer s.deinit();
+
+    // Build 30 rows of scrollback on top of our 10-row viewport so we have a
+    // 40-row screen with history above the active area.
+    for (0..30) |_| _ = try s.pages.grow();
+    s.cursorReload();
+    try testing.expectEqual(@as(usize, 40), s.pages.scrollbar().total);
+
+    // Fill the entire screen with two-row wrapped runs:
+    // - even rows mark the end of a wrapped line
+    // - odd rows mark the continuation
+    //
+    // With 2 columns, each logical line occupies two rows. When we grow to 4
+    // columns with reflow enabled, those pairs unwrap back into single rows.
+    // That cuts the total row count down and is what stresses the viewport pin.
+    var it = s.pages.pageIterator(.right_down, .{ .screen = .{} }, null);
+    while (it.next()) |chunk| {
+        const page = &chunk.node.data;
+        for (chunk.start..chunk.end) |y| {
+            const rac = page.getRowAndCell(0, y);
+            if (y % 2 == 0) {
+                rac.row.wrap = true;
+            } else {
+                rac.row.wrap_continuation = true;
+            }
+
+            for (0..s.pages.cols) |x| {
+                page.getRowAndCell(x, y).cell.* = .{
+                    .content_tag = .codepoint,
+                    .content = .{ .codepoint = 'A' },
+                };
+            }
+        }
+    }
+
+    // Pin the viewport to a history row just above the active area.
+    //
+    // Before resize:
+    // - total rows = 40
+    // - active area starts at row 30
+    // - viewport is pinned at row 28
+    //
+    // After unwrap during resize:
+    // - total rows shrinks to 20
+    // - the old row 28 remaps into what is now the active area
+    //
+    // The bug was that resize/grow would temporarily keep the viewport as a
+    // history pin even after reflow had moved it into the active area, leaving
+    // fewer than `rows` visible rows beneath the pin and tripping integrity
+    // checks.
+    s.pages.scroll(.{ .pin = s.pages.pin(.{ .screen = .{ .y = 28 } }).? });
+    try testing.expect(s.pages.viewport == .pin);
+    try testing.expect(s.pages.getBottomRight(.viewport) != null);
+
+    // Growing columns triggers reflow, which unwraps the synthetic wrapped
+    // rows above. This used to panic during the resize path.
+    try s.resize(.{ .cols = 4, .rows = s.pages.rows, .reflow = true });
+
+    // After the fix, the viewport is normalized back to the active area as
+    // soon as the pinned row lands there, so viewport queries remain valid.
+    try testing.expectEqual(@as(usize, 4), s.pages.cols);
+    try testing.expect(s.pages.scrollbar().total < 40);
+    try testing.expect(s.pages.viewport == .active);
+    try testing.expect(s.pages.getBottomRight(.viewport) != null);
+}
+
 test "Screen: resize more cols with reflow" {
     const testing = std.testing;
     const alloc = testing.allocator;
@@ -7185,6 +7698,41 @@ test "Screen: resize less cols to eliminate wide char with row space" {
     }
 }
 
+test "Screen: resize less cols reflows cursor after wrapped text" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    var s = try Screen.init(alloc, .{ .cols = 50, .rows = 7, .max_scrollback = 0 });
+    defer s.deinit();
+
+    for (0..30) |_| try s.testWriteString("a");
+
+    try testing.expectEqual(@as(usize, 0), s.cursor.y);
+    try testing.expectEqual(@as(usize, 30), s.cursor.x);
+
+    try s.resize(.{ .cols = 25, .rows = 7 });
+
+    try testing.expectEqual(@as(usize, 1), s.cursor.y);
+    try testing.expectEqual(@as(usize, 5), s.cursor.x);
+}
+
+test "Screen: resize less cols reflows cursor after empty cells" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    var s = try Screen.init(alloc, .{ .cols = 10, .rows = 3, .max_scrollback = 0 });
+    defer s.deinit();
+
+    try s.testWriteString("abc");
+    s.cursorRight(6);
+
+    try testing.expectEqual(@as(usize, 0), s.cursor.y);
+    try testing.expectEqual(@as(usize, 9), s.cursor.x);
+
+    try s.resize(.{ .cols = 5, .rows = 3 });
+
+    try testing.expectEqual(@as(usize, 1), s.cursor.y);
+    try testing.expectEqual(@as(usize, 4), s.cursor.x);
+}
+
 test "Screen: resize more cols with wide spacer head" {
     const testing = std.testing;
     const alloc = testing.allocator;
@@ -7518,6 +8066,32 @@ test "Screen: select untracked" {
     try testing.expectEqual(tracked + 2, s.pages.countTrackedPins());
     try s.select(null);
     try testing.expectEqual(tracked, s.pages.countTrackedPins());
+}
+
+test "Screen: select replaces existing pins" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var s = try init(alloc, .{ .cols = 10, .rows = 10, .max_scrollback = 0 });
+    defer s.deinit();
+    try s.testWriteString("ABC  DEF\n 123\n456");
+
+    const tracked = s.pages.countTrackedPins();
+    try s.select(Selection.init(
+        s.pages.pin(.{ .active = .{ .x = 0, .y = 0 } }).?,
+        s.pages.pin(.{ .active = .{ .x = 3, .y = 0 } }).?,
+        false,
+    ));
+    try testing.expectEqual(tracked + 2, s.pages.countTrackedPins());
+
+    // Replacing the selection must untrack the prior selection's pins
+    // rather than leak them.
+    try s.select(Selection.init(
+        s.pages.pin(.{ .active = .{ .x = 0, .y = 1 } }).?,
+        s.pages.pin(.{ .active = .{ .x = 2, .y = 1 } }).?,
+        false,
+    ));
+    try testing.expectEqual(tracked + 2, s.pages.countTrackedPins());
 }
 
 test "Screen: selectAll" {
@@ -9607,9 +10181,9 @@ test "Screen: cursorDown to page with insufficient capacity" {
     // cursor movement functions). The bug pattern:
     //
     // 1. cursorDown creates a by-value copy of the pin via page_pin.down(n)
-    // 2. cursorChangePin is called, which may trigger adjustCapacity
+    // 2. cursorChangePin is called, which may trigger increaseCapacity
     //    if the target page's style map is full
-    // 3. adjustCapacity frees the old page and creates a new one
+    // 3. increaseCapacity frees the old page and creates a new one
     // 4. The local pin copy still points to the freed page
     // 5. rowAndCell() on the stale pin accesses freed memory
 
@@ -9632,7 +10206,7 @@ test "Screen: cursorDown to page with insufficient capacity" {
     try testing.expect(start_page != new_page);
 
     // Fill new_page's style map to capacity. When we move INTO this page
-    // with a style set, adjustCapacity will be triggered.
+    // with a style set, increaseCapacity will be triggered.
     {
         new_page.pauseIntegrityChecks(true);
         defer new_page.pauseIntegrityChecks(false);
@@ -9661,7 +10235,7 @@ test "Screen: cursorDown to page with insufficient capacity" {
                 try testing.expect(&next_pin.node.data == new_page);
 
                 // This cursorDown triggers the bug: the local page_pin copy
-                // becomes stale after adjustCapacity, causing rowAndCell()
+                // becomes stale after increaseCapacity, causing rowAndCell()
                 // to access freed memory.
                 s.cursorDown(1);
 

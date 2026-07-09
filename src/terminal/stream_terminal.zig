@@ -1,12 +1,16 @@
 const std = @import("std");
+const build_options = @import("terminal_options");
 const testing = std.testing;
+const apc = @import("apc.zig");
 const csi = @import("csi.zig");
 const device_attributes = @import("device_attributes.zig");
 const device_status = @import("device_status.zig");
 const stream = @import("stream.zig");
 const Action = stream.Action;
 const Screen = @import("Screen.zig");
+const color = @import("color.zig");
 const modes = @import("modes.zig");
+const osc = @import("osc.zig");
 const osc_color = @import("osc/parsers/color.zig");
 const kitty_color = @import("kitty/color.zig");
 const size_report = @import("size_report.zig");
@@ -34,6 +38,17 @@ pub const Handler = struct {
     /// but they allow for the handler to trigger or query external
     /// effects.
     effects: Effects = .readonly,
+
+    /// The APC command handler maintains the APC state. APC is like
+    /// CSI or OSC, but it is a private escape sequence that is used
+    /// to send commands to the terminal emulator. This is used by
+    /// the kitty graphics protocol.
+    apc_handler: apc.Handler = .{},
+
+    /// Default cursor style used by DECSCUSR reset (CSI 0 q).
+    default_cursor: bool = true,
+    default_cursor_style: Screen.CursorStyle = .block,
+    default_cursor_blink: bool = false,
 
     pub const Effects = struct {
         /// Called when the terminal needs to write data back to the pty,
@@ -70,6 +85,11 @@ pub const Handler = struct {
         /// handler.terminal.getTitle().
         title_changed: ?*const fn (*Handler) void,
 
+        /// Called when the terminal pwd changes via escape sequences
+        /// (e.g. OSC 7). The new pwd can be queried via
+        /// handler.terminal.getPwd().
+        pwd_changed: ?*const fn (*Handler) void,
+
         /// Called in response to an XTVERSION query. Returns the version
         /// string to report (e.g. "ghostty 1.2.3"). The returned memory
         /// must be valid for the lifetime of the call. The maximum length
@@ -86,6 +106,7 @@ pub const Handler = struct {
             .enquiry = null,
             .size = null,
             .title_changed = null,
+            .pwd_changed = null,
             .write_pty = null,
             .xtversion = null,
         };
@@ -98,9 +119,7 @@ pub const Handler = struct {
     }
 
     pub fn deinit(self: *Handler) void {
-        // Currently does nothing but may in the future so callers should
-        // call this.
-        _ = self;
+        self.apc_handler.deinit();
     }
 
     pub fn vt(
@@ -120,6 +139,7 @@ pub const Handler = struct {
     ) !void {
         switch (action) {
             .print => try self.terminal.print(value.cp),
+            .print_slice => try self.terminal.printSlice(value.cps),
             .print_repeat => try self.terminal.printRepeat(value),
             .backspace => self.terminal.backspace(),
             .carriage_return => self.terminal.carriageReturn(),
@@ -146,12 +166,19 @@ pub const Handler = struct {
                 self.terminal.screens.active.cursor.x + 1,
             ),
             .cursor_style => {
+                self.default_cursor = false;
+
                 const blink = switch (value) {
-                    .default, .steady_block, .steady_bar, .steady_underline => false,
+                    .default => self.default_cursor_blink,
+                    .steady_block, .steady_bar, .steady_underline => false,
                     .blinking_block, .blinking_bar, .blinking_underline => true,
                 };
                 const style: Screen.CursorStyle = switch (value) {
-                    .default, .blinking_block, .steady_block => .block,
+                    .default => style: {
+                        self.default_cursor = true;
+                        break :style self.default_cursor_style;
+                    },
+                    .blinking_block, .steady_block => .block,
                     .blinking_bar, .steady_bar => .bar,
                     .blinking_underline, .steady_underline => .underline,
                 };
@@ -222,13 +249,23 @@ pub const Handler = struct {
             },
             .active_status_display => self.terminal.status_display = value,
             .decaln => try self.terminal.decaln(),
-            .full_reset => self.terminal.fullReset(),
+            .full_reset => {
+                self.terminal.fullReset();
+                self.default_cursor = true;
+                self.terminal.modes.set(.cursor_blinking, self.default_cursor_blink);
+                self.terminal.screens.active.cursor.cursor_style = self.default_cursor_style;
+            },
             .start_hyperlink => try self.terminal.screens.active.startHyperlink(value.uri, value.id),
             .end_hyperlink => self.terminal.screens.active.endHyperlink(),
             .semantic_prompt => try self.terminal.semanticPrompt(value),
             .mouse_shape => self.terminal.mouse_shape = value,
-            .color_operation => try self.colorOperation(value.op, &value.requests),
+            .color_operation => try self.colorOperation(&value.requests, value.terminator),
             .kitty_color_report => try self.kittyColorOperation(value),
+
+            // APC
+            .apc_start => self.apc_handler.start(),
+            .apc_put => self.apc_handler.feed(self.terminal.gpa(), value),
+            .apc_end => self.apcEnd(),
 
             // Effect-based handlers
             .bell => self.bell(),
@@ -240,6 +277,7 @@ pub const Handler = struct {
             .request_mode_unknown => self.requestModeUnknown(value.mode, value.ansi),
             .size_report => self.reportSize(value),
             .window_title => self.windowTitle(value.title),
+            .report_pwd => self.reportPwd(value.url),
             .xtversion => self.reportXtversion(),
 
             // No supported DCS commands have any terminal-modifying effects,
@@ -249,15 +287,7 @@ pub const Handler = struct {
             .dcs_unhook,
             => {},
 
-            // APC can modify terminal state (Kitty graphics) but we don't
-            // currently support it in the readonly stream.
-            .apc_start,
-            .apc_end,
-            .apc_put,
-            => {},
-
             // Have no terminal-modifying effect
-            .report_pwd,
             .show_desktop_notification,
             .progress_report,
             .clipboard_contents,
@@ -321,10 +351,11 @@ pub const Handler = struct {
             .color_scheme => {
                 const func = self.effects.color_scheme orelse return;
                 const scheme = func(self) orelse return;
-                self.writePty(switch (scheme) {
-                    .dark => "\x1B[?997;1n",
-                    .light => "\x1B[?997;2n",
-                });
+                var buf: [device_status.max_color_scheme_report_encode_size + 1]u8 = undefined;
+                var writer: std.Io.Writer = .fixed(buf[0..device_status.max_color_scheme_report_encode_size]);
+                device_status.encodeColorSchemeReport(&writer, scheme) catch return;
+                buf[writer.end] = 0;
+                self.writePty(buf[0..writer.end :0]);
             },
         }
     }
@@ -413,6 +444,29 @@ pub const Handler = struct {
         };
 
         const func = self.effects.title_changed orelse return;
+        func(self);
+    }
+
+    fn reportPwd(self: *Handler, url_raw: []const u8) void {
+        // Prevent DoS attacks by limiting url length. Headroom for
+        // Linux PATH_MAX (4096) plus URI scheme/host and percent-encoding.
+        const max_url_len = 4096;
+        const url = if (url_raw.len > max_url_len) url: {
+            log.warn("pwd url length {d} exceeds max length {d}, truncating", .{
+                url_raw.len,
+                max_url_len,
+            });
+            break :url url_raw[0..max_url_len];
+        } else url_raw;
+
+        // We store the raw payload unparsed. Embedders read it via
+        // getPwd() and are responsible for decoding any URI scheme.
+        self.terminal.setPwd(url) catch |err| {
+            log.warn("error setting pwd err={}", .{err});
+            return;
+        };
+
+        const func = self.effects.pwd_changed orelse return;
         func(self);
     }
 
@@ -546,11 +600,16 @@ pub const Handler = struct {
 
     fn colorOperation(
         self: *Handler,
-        op: osc_color.Operation,
         requests: *const osc_color.List,
+        terminator: osc.Terminator,
     ) !void {
-        _ = op;
         if (requests.count() == 0) return;
+
+        var stack = std.heap.stackFallback(1024, self.terminal.gpa());
+        const alloc = stack.get();
+        var response: std.Io.Writer.Allocating = .init(alloc);
+        defer response.deinit();
+        const writer = &response.writer;
 
         var it = requests.constIterator(0);
         while (it.next()) |req| {
@@ -609,10 +668,54 @@ pub const Handler = struct {
                     mask.* = .initEmpty();
                 },
 
-                .query,
-                .reset_special,
-                => {},
+                .query => |target| {
+                    if (self.effects.write_pty == null) continue;
+                    const c = self.terminal.colorForXterm(target) orelse continue;
+                    try writeXtermColorReport(writer, target, c, terminator);
+                },
+
+                .reset_special => {},
             }
+        }
+
+        if (response.written().len > 0) {
+            const resp = try response.toOwnedSliceSentinel(0);
+            defer alloc.free(resp);
+            self.writePty(resp);
+        }
+    }
+
+    fn writeXtermColorReport(
+        writer: *std.Io.Writer,
+        target: osc_color.Target,
+        c: color.RGB,
+        terminator: osc.Terminator,
+    ) !void {
+        switch (target) {
+            .palette => |i| {
+                try writer.print("\x1b]4;{d};", .{i});
+                try c.encodeRgb16(writer);
+                try writer.writeAll(terminator.string());
+            },
+            .dynamic => |dynamic| switch (dynamic) {
+                .foreground,
+                .background,
+                .cursor,
+                => {
+                    try writer.print("\x1b]{d};", .{@intFromEnum(dynamic)});
+                    try c.encodeRgb16(writer);
+                    try writer.writeAll(terminator.string());
+                },
+                .pointer_foreground,
+                .pointer_background,
+                .tektronix_foreground,
+                .tektronix_background,
+                .highlight_background,
+                .tektronix_cursor,
+                .highlight_foreground,
+                => {},
+            },
+            .special => {},
         }
     }
 
@@ -620,6 +723,12 @@ pub const Handler = struct {
         self: *Handler,
         request: kitty_color.OSC,
     ) !void {
+        var stack = std.heap.stackFallback(1024, self.terminal.gpa());
+        const alloc = stack.get();
+        var response: std.Io.Writer.Allocating = .init(alloc);
+        defer response.deinit();
+        const writer = &response.writer;
+
         for (request.list.items) |item| {
             switch (item) {
                 .set => |v| switch (v.key) {
@@ -646,8 +755,73 @@ pub const Handler = struct {
                         else => {},
                     },
                 },
-                .query => {},
+                .query => |key| {
+                    if (self.effects.write_pty == null) continue;
+                    const c = self.terminal.colorForKitty(key) orelse {
+                        if (!key.hasTerminalQueryColor()) continue;
+                        if (response.written().len == 0) try writer.writeAll("\x1b]21");
+                        try writer.print(";{f}=", .{key});
+                        continue;
+                    };
+
+                    if (response.written().len == 0) try writer.writeAll("\x1b]21");
+                    try writer.print(";{f}=", .{key});
+                    try c.encodeRgb8(writer);
+                },
             }
+        }
+
+        if (response.written().len > 0) {
+            try writer.writeAll(request.terminator.string());
+            const resp = try response.toOwnedSliceSentinel(0);
+            defer alloc.free(resp);
+            self.writePty(resp);
+        }
+    }
+
+    fn apcEnd(self: *Handler) void {
+        const alloc = self.terminal.gpa();
+        var cmd = self.apc_handler.end() orelse return;
+        defer cmd.deinit(alloc);
+
+        switch (cmd) {
+            .kitty => |*kitty_cmd| if (comptime build_options.kitty_graphics) {
+                if (self.terminal.kittyGraphics(
+                    alloc,
+                    kitty_cmd,
+                )) |resp| resp: {
+                    // Don't waste time encoding if we can't write responses
+                    // anyways.
+                    if (self.effects.write_pty == null) break :resp;
+
+                    // Encode and write the response if we have one.
+                    var buf: [1024]u8 = undefined;
+                    var writer: std.Io.Writer = .fixed(&buf);
+                    resp.encode(&writer) catch return;
+                    writer.writeByte(0) catch return;
+                    const final = writer.buffered();
+                    if (final.len > 3) self.writePty(final[0 .. final.len - 1 :0]);
+                }
+            },
+
+            .glyph => |*glyph_req| {
+                const resp = self.terminal.glyphProtocol(alloc, glyph_req);
+                if (resp) |r| resp_block: {
+                    // Don't waste time encoding if we can't write responses
+                    // anyways.
+                    if (self.effects.write_pty == null) break :resp_block;
+
+                    // Glyph responses are short and bounded by the protocol
+                    // fields we emit, so this matches the Kitty response
+                    // buffer size above with ample headroom.
+                    var buf: [apc.glyph.Response.max_wire_bytes]u8 = undefined;
+                    var writer: std.Io.Writer = .fixed(&buf);
+                    r.formatWire(&writer) catch return;
+                    writer.writeByte(0) catch return;
+                    const final = writer.buffered();
+                    self.writePty(final[0 .. final.len - 1 :0]);
+                }
+            },
         }
     }
 };
@@ -869,6 +1043,8 @@ test "full reset" {
     s.nextSlice("\x1B[10;20H");
     s.nextSlice("\x1B[5;20r"); // Set scroll region
     s.nextSlice("\x1B[?7l"); // Disable wraparound
+    s.nextSlice("\x1B_25a1;r;cp=e0a0;AAAAAAAAAAAAAA==\x1B\\");
+    try testing.expect(t.glyph_glossary.contains(0xE0A0));
 
     // Full reset
     s.nextSlice("\x1Bc");
@@ -879,6 +1055,35 @@ test "full reset" {
     try testing.expectEqual(@as(usize, 0), t.scrolling_region.top);
     try testing.expectEqual(@as(usize, 23), t.scrolling_region.bottom);
     try testing.expect(t.modes.get(.wraparound));
+    try testing.expect(!t.glyph_glossary.contains(0xE0A0));
+}
+
+test "glyph protocol APC with write_pty callback" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var last_response: ?[:0]const u8 = null;
+        fn writePty(_: *Handler, data: [:0]const u8) void {
+            if (last_response) |old| testing.allocator.free(old);
+            last_response = testing.allocator.dupeZ(u8, data) catch @panic("OOM");
+        }
+    };
+    S.last_response = null;
+    defer if (S.last_response) |old| testing.allocator.free(old);
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    s.nextSlice("\x1B_25a1;s\x1B\\");
+    try testing.expectEqualStrings("\x1B_25a1;s;fmt=glyf\x1B\\", S.last_response.?);
+
+    s.nextSlice("\x1B_25a1;r;cp=e0a0;AAAAAAAAAAAAAA==\x1B\\");
+    try testing.expectEqualStrings("\x1B_25a1;r;cp=e0a0;status=0\x1B\\", S.last_response.?);
+    try testing.expect(t.glyph_glossary.contains(0xE0A0));
 }
 
 test "ignores query actions" {
@@ -892,6 +1097,8 @@ test "ignores query actions" {
     s.nextSlice("\x1B[c"); // Device attributes
     s.nextSlice("\x1B[5n"); // Device status report
     s.nextSlice("\x1B[6n"); // Cursor position report
+    s.nextSlice("\x1B]4;0;?\x1B\\"); // OSC color query
+    s.nextSlice("\x1B]21;foreground=?\x1B\\"); // Kitty color query
 
     // Terminal should still be functional
     s.nextSlice("Test");
@@ -1008,6 +1215,63 @@ test "OSC 12 set and reset cursor color" {
     // After reset, cursor might be null (using default)
 }
 
+test "OSC color query responses" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 10, .rows = 10 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var last_response: ?[:0]const u8 = null;
+
+        fn reset() void {
+            if (last_response) |old| testing.allocator.free(old);
+            last_response = null;
+        }
+
+        fn writePty(_: *Handler, data: [:0]const u8) void {
+            reset();
+            last_response = testing.allocator.dupeZ(u8, data) catch @panic("OOM");
+        }
+    };
+    S.last_response = null;
+    defer S.reset();
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    s.nextSlice("\x1b]10;?\x1b\\");
+    try testing.expect(S.last_response == null);
+
+    s.nextSlice("\x1b]11;?\x1b\\");
+    try testing.expect(S.last_response == null);
+
+    s.nextSlice("\x1b]4;2;rgb:12/34/56;2;?\x1b\\");
+    try testing.expectEqualStrings(
+        "\x1b]4;2;rgb:1212/3434/5656\x1b\\",
+        S.last_response.?,
+    );
+
+    s.nextSlice("\x1b]10;rgb:01/02/03\x1b\\");
+    s.nextSlice("\x1b]11;rgb:04/05/06\x1b\\");
+    s.nextSlice("\x1b]12;rgb:07/08/09\x1b\\");
+    s.nextSlice("\x1b]10;?;?;?\x1b\\");
+    try testing.expectEqualStrings(
+        "\x1b]10;rgb:0101/0202/0303\x1b\\" ++
+            "\x1b]11;rgb:0404/0505/0606\x1b\\" ++
+            "\x1b]12;rgb:0707/0808/0909\x1b\\",
+        S.last_response.?,
+    );
+
+    s.nextSlice("\x1b]112\x1b\\");
+    s.nextSlice("\x1b]12;?\x07");
+    try testing.expectEqualStrings(
+        "\x1b]12;rgb:0101/0202/0303\x07",
+        S.last_response.?,
+    );
+}
+
 test "kitty color protocol set palette" {
     var t: Terminal = try .init(testing.allocator, .{ .cols = 10, .rows = 10 });
     defer t.deinit(testing.allocator);
@@ -1100,6 +1364,46 @@ test "kitty color protocol reset foreground" {
     s.nextSlice("\x1b]21;foreground=\x1b\\");
     // After reset, should be unset
     try testing.expect(t.colors.foreground.get() == null);
+}
+
+test "kitty color protocol query responses" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 10, .rows = 10 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var last_response: ?[:0]const u8 = null;
+
+        fn reset() void {
+            if (last_response) |old| testing.allocator.free(old);
+            last_response = null;
+        }
+
+        fn writePty(_: *Handler, data: [:0]const u8) void {
+            reset();
+            last_response = testing.allocator.dupeZ(u8, data) catch @panic("OOM");
+        }
+    };
+    S.last_response = null;
+    defer S.reset();
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    s.nextSlice("\x1b]21;background=?\x1b\\");
+    try testing.expectEqualStrings(
+        "\x1b]21;background=\x1b\\",
+        S.last_response.?,
+    );
+
+    s.nextSlice("\x1b]21;foreground=rgb:12/34/56;2=rgb:aa/bb/cc\x1b\\");
+    s.nextSlice("\x1b]21;foreground=?;background=?;2=?\x1b\\");
+    try testing.expectEqualStrings(
+        "\x1b]21;foreground=rgb:12/34/56;background=;2=rgb:aa/bb/cc\x1b\\",
+        S.last_response.?,
+    );
 }
 
 test "palette dirty flag set on color change" {
@@ -2068,4 +2372,53 @@ test "device attributes: custom response" {
 
     s.nextSlice("\x1B[>c");
     try testing.expectEqualStrings("\x1b[>41;100;0c", S.written.?);
+}
+
+test "kitty graphics APC response" {
+    if (comptime !build_options.kitty_graphics) return error.SkipZigTest;
+
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 10, .rows = 10 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var written: ?[]const u8 = null;
+        fn writePty(_: *Handler, data: [:0]const u8) void {
+            if (written) |old| testing.allocator.free(old);
+            written = testing.allocator.dupe(u8, data) catch @panic("OOM");
+        }
+    };
+    S.written = null;
+    defer if (S.written) |old| testing.allocator.free(old);
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    // Send a kitty graphics transmit command with image id 1
+    s.nextSlice("\x1b_Ga=t,t=d,f=24,i=1,s=1,v=2,c=10,r=1;////////\x1b\\");
+
+    // Should have written a response back
+    try testing.expectEqualStrings("\x1b_Gi=1;OK\x1b\\", S.written.?);
+}
+
+test "kitty graphics via APC" {
+    if (comptime !build_options.kitty_graphics) return error.SkipZigTest;
+
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 10, .rows = 10 });
+    defer t.deinit(testing.allocator);
+
+    const handler: Handler = .init(&t);
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    // Send a kitty graphics transmit command via APC:
+    // ESC _ G <payload> ESC \
+    // a=t,t=d,f=24,i=1,s=1,v=2,c=10,r=1;//////// (1x2 RGB direct)
+    s.nextSlice("\x1b_Ga=t,t=d,f=24,i=1,s=1,v=2,c=10,r=1;////////\x1b\\");
+
+    const storage = &t.screens.active.kitty_images;
+    const img = storage.imageById(1).?;
+    try testing.expectEqual(.rgb, img.format);
 }
