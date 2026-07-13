@@ -881,15 +881,23 @@ pub const Surface = extern struct {
         return @intFromBool(search_active == 0 and focused == 0 and is_split != 0);
     }
 
-    /// Same overlay styling as splits; single-pane surfaces when the window is inactive.
-    /// When `is-split` is set, only the split revealer dims (avoids double dimming).
+    /// Same overlay styling as splits; dims a surface when the window is inactive.
+    /// We only reveal this overlay when the split overlay isn't already covering the
+    /// surface (the split overlay shows for non-focused splits), so a non-focused
+    /// split in an inactive window is never double-dimmed. Single-pane surfaces and
+    /// the focused split both dim through this overlay.
     fn closureShouldUnfocusedWindowBeShown(
         _: *Self,
         search_active: c_int,
         window_active: c_int,
+        focused: c_int,
         is_split: c_int,
     ) callconv(.c) c_int {
-        return @intFromBool(search_active == 0 and window_active == 0 and is_split == 0);
+        return @intFromBool(
+            search_active == 0 and
+                window_active == 0 and
+                (is_split == 0 or focused != 0),
+        );
     }
 
     pub fn toggleFullscreen(self: *Self) void {

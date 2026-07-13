@@ -187,23 +187,19 @@ extension Ghostty {
                     SurfaceErrorView()
                 }
 
-                // If we're part of a split view and don't have focus, we put a semi-transparent
-                // rectangle above our view to make it look unfocused. We include the last
-                // focused surface so this still works while SwiftUI focus is temporarily nil.
-                if isSplit && !isFocusedSurface {
-                    let overlayOpacity = ghostty.config.unfocusedSplitOpacity
-                    if overlayOpacity > 0 {
-                        Rectangle()
-                            .fill(ghostty.config.unfocusedSplitFill)
-                            .allowsHitTesting(false)
-                            .opacity(overlayOpacity)
-                    }
-                }
-
-                // When the window does not have focus and this surface is not in a split,
-                // dim using the same unfocused-split-opacity / unfocused-split-fill as splits.
-                // Split layouts rely on the split overlay only so we never double-dim.
-                if !windowFocus && !isSplit {
+                // Dim this surface with a semi-transparent rectangle when it should
+                // look unfocused. Two cases share the same unfocused-split-opacity /
+                // unfocused-split-fill styling:
+                //
+                //   1. It's a split that isn't the focused surface. We include the last
+                //      focused surface so this still works while SwiftUI focus is
+                //      temporarily nil.
+                //   2. The whole window is unfocused, which dims every surface including
+                //      the focused split.
+                //
+                // A single overlay covers both cases so we never double-dim a
+                // non-focused split in an unfocused window.
+                if (isSplit && !isFocusedSurface) || !windowFocus {
                     let overlayOpacity = ghostty.config.unfocusedSplitOpacity
                     if overlayOpacity > 0 {
                         Rectangle()
