@@ -190,10 +190,12 @@ extension Ghostty {
                 // If we're part of a split view and don't have focus, we put a semi-transparent
                 // rectangle above our view to make it look unfocused. We include the last
                 // focused surface so this still works while SwiftUI focus is temporarily nil.
-                // We only apply this when the window has focus; if the window itself is
-                // unfocused, the window overlay below is applied uniformly to all surfaces
-                // instead so that both effects never stack on the same surface.
-                if windowFocus && isSplit && !isFocusedSurface {
+                // We suppress this when the window overlay is active (window lost focus AND
+                // window opacity is enabled) so that both effects never stack on the same surface.
+                // If window opacity is disabled (overlayOpacity == 0), we still show split
+                // overlay even when the window is unfocused so the focus distinction is preserved.
+                let windowOverlayActive = !windowFocus && ghostty.config.unfocusedWindowOpacity > 0
+                if !windowOverlayActive && isSplit && !isFocusedSurface {
                     let overlayOpacity = ghostty.config.unfocusedSplitOpacity
                     if overlayOpacity > 0 {
                         Rectangle()

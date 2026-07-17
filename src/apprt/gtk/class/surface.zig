@@ -871,15 +871,27 @@ pub const Surface = extern struct {
 
     /// Callback used to determine whether unfocused-split-fill / unfocused-split-opacity
     /// should be applied to the surface. The split overlay is suppressed when the window
-    /// is not active so that it never stacks on top of the window overlay.
+    /// overlay is active (window inactive and unfocused-window-opacity < 1.0) so that both
+    /// effects never stack on the same surface. If window opacity is disabled (>= 1.0),
+    /// we still show the split overlay when the window is inactive so the focus distinction
+    /// is preserved.
     fn closureShouldUnfocusedSplitBeShown(
-        _: *Self,
+        self: *Self,
         search_active: c_int,
         focused: c_int,
         is_split: c_int,
         window_active: c_int,
     ) callconv(.c) c_int {
-        return @intFromBool(search_active == 0 and focused == 0 and is_split != 0 and window_active != 0);
+        if (search_active != 0 or focused != 0 or is_split == 0) return 0;
+        // Window is active: always show split overlay on unfocused splits.
+        if (window_active != 0) return 1;
+        // Window is inactive: only suppress split overlay when window opacity is active
+        // (< 1.0), because the window overlay replaces it. If window opacity is disabled
+        // (>= 1.0), keep showing the split overlay so focus distinction is preserved.
+        const priv = self.private();
+        const config = priv.config orelse return 0;
+        const opacity = config.get().@"unfocused-window-opacity";
+        return @intFromBool(opacity >= 1.0);
     }
 
     /// Callback used to determine whether unfocused-window-fill / unfocused-window-opacity
