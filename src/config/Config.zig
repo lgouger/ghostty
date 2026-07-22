@@ -1070,14 +1070,14 @@ palette: Palette = .{},
 /// The opacity level (opposite of transparency) of an unfocused window.
 /// When a window loses focus, all surfaces in the window are dimmed by this amount
 /// to make it easier to see which window has focus. To disable this feature, set
-/// this value to 1 or 0.
+/// this value to 1.
 ///
 /// A value of 1 is fully opaque (no dimming) and a value of 0 is fully transparent.
 /// Because "0" is not useful (it makes the window look very weird), the minimum value
 /// is 0.15. This value still looks weird but you can at least see what's going on.
 /// A value outside of the range 0.15 to 1 will be clamped to the nearest valid value.
 ///
-/// When set to 0 (the default), this feature is disabled completely.
+/// When set to 1 (the default), this feature is disabled completely.
 @"unfocused-window-opacity": f64 = 1.0,
 
 /// The color to dim an unfocused window. Unfocused windows are dimmed by

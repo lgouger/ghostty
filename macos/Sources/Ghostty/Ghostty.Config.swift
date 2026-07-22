@@ -535,7 +535,7 @@ extension Ghostty {
 
         var unfocusedSplitOpacity: Double {
             guard let config = self.config else { return 1 }
-            var opacity: Double = 0.85
+            var opacity: Double = 0.7
             let key = "unfocused-split-opacity"
             _ = ghostty_config_get(config, &opacity, key, UInt(key.lengthOfBytes(using: .utf8)))
             return 1 - opacity
