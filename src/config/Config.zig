@@ -16,7 +16,7 @@ const build_config = @import("../build_config.zig");
 const assert = @import("../quirks.zig").inlineAssert;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
-const global_state = &@import("../global.zig").state;
+const global = @import("../global.zig");
 const deepEqual = @import("../datastruct/comparison.zig").deepEqual;
 const fontpkg = @import("../font/main.zig");
 const inputpkg = @import("../input.zig");
@@ -1036,27 +1036,15 @@ palette: Palette = .{},
 /// If the macOS values are set, then this implies `background-blur = true`
 /// on non-macOS platforms.
 ///
-/// Supported on macOS and on some Linux desktop environments, including:
+/// On Linux, the exact blur intensity is ignored and any positive integer
+/// or `true` value will enable background blur. On Wayland, Ghostty uses
+/// the [`ext-background-effect-v1`](https://wayland.app/protocols/ext-background-effect-v1)
+/// protocol to enable the blur effect, but this is not always supported
+/// on all compositors. Check the documentation of your compositor or
+/// desktop environment for blur support and how to configure it.
 ///
-///   * KDE Plasma (Wayland and X11)
-///
-/// Warning: the exact blur intensity is _ignored_ under KDE Plasma, and setting
-/// this setting to either `true` or any positive blur intensity value would
-/// achieve the same effect. The reason is that KWin, the window compositor
-/// powering Plasma, only has one global blur setting and does not allow
-/// applications to specify individual blur settings.
-///
-/// To configure KWin's global blur setting, open System Settings and go to
-/// "Apps & Windows" > "Window Management" > "Desktop Effects" and select the
-/// "Blur" plugin. If disabled, enable it by ticking the checkbox to the left.
-/// Then click on the "Configure" button and there will be two sliders that
-/// allow you to set background blur and noise intensities for all apps,
-/// including Ghostty.
-///
-/// All other Linux desktop environments are as of now unsupported. Users may
-/// need to set environment-specific settings and/or install third-party plugins
-/// in order to support background blur, as there isn't a unified interface for
-/// doing so.
+/// On X11, blur can only be enabled when using the KWin compositor
+/// as a part of KDE Plasma.
 @"background-blur": BackgroundBlur = .false,
 
 /// The opacity level (opposite of transparency) used to dim unfocused splits and,
@@ -3863,7 +3851,7 @@ _conditional_set: std.EnumSet(conditional.Key) = .{},
 /// The steps we can use to reload the configuration after it has been loaded
 /// without reopening the files. This is used in very specific cases such
 /// as loadTheme which has more details on why.
-_replay_steps: std.ArrayListUnmanaged(Replay.Step) = .{},
+_replay_steps: std.ArrayList(Replay.Step) = .empty,
 
 /// Set to true if Ghostty was executed as xdg-terminal-exec on Linux.
 @"_xdg-terminal-exec": bool = false,
@@ -3937,7 +3925,7 @@ pub fn loadIter(
 /// `path` must be resolved and absolute.
 pub fn loadFile(self: *Config, alloc: Allocator, path: []const u8) !void {
     assert(std.fs.path.isAbsolute(path));
-    var file = file_load.open(path) catch |err| switch (err) {
+    var file = file_load.open(global.io(), path) catch |err| switch (err) {
         error.NotAFile => {
             log.warn(
                 "config-file {s}: not reading because it is not a file",
@@ -3948,16 +3936,16 @@ pub fn loadFile(self: *Config, alloc: Allocator, path: []const u8) !void {
 
         else => return err,
     };
-    defer file.close();
+    defer file.close(global.io());
 
     try self.loadFsFile(alloc, &file, path);
 }
 
 /// Load config from the given File.
-fn loadFsFile(self: *Config, alloc: Allocator, file: *std.fs.File, path: []const u8) !void {
+fn loadFsFile(self: *Config, alloc: Allocator, file: *std.Io.File, path: []const u8) !void {
     std.log.info("reading configuration file path={s}", .{path});
     var buf: [2048]u8 = undefined;
-    var file_reader = file.reader(&buf);
+    var file_reader = file.reader(global.io(), &buf);
     const reader = &file_reader.interface;
     try self.loadReader(alloc, reader, path);
 }
@@ -4050,12 +4038,12 @@ pub fn loadOptionalFile(
 fn writeConfigTemplate(path: []const u8) !void {
     log.info("creating template config file: path={s}", .{path});
     if (std.fs.path.dirname(path)) |dir_path| {
-        try std.fs.cwd().makePath(dir_path);
+        try std.Io.Dir.cwd().createDirPath(global.io(), dir_path);
     }
-    const file = try std.fs.createFileAbsolute(path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.createFileAbsolute(global.io(), path, .{});
+    defer file.close(global.io());
     var buf: [4096]u8 = undefined;
-    var file_writer = file.writer(&buf);
+    var file_writer = file.writer(global.io(), &buf);
     const writer = &file_writer.interface;
     try writer.print(
         @embedFile("./config-template"),
@@ -4149,7 +4137,7 @@ pub fn loadCliArgs(self: *Config, alloc_gpa: Allocator) !void {
         .windows => {},
 
         // Fast-path if we are Linux/BSD and have no args.
-        .linux, .freebsd => if (std.os.argv.len <= 1) return,
+        .linux, .freebsd => if (global.args().vector.len <= 1) return,
 
         // Everything else we have to at least try because it may
         // not use std.os.argv.
@@ -4168,7 +4156,7 @@ pub fn loadCliArgs(self: *Config, alloc_gpa: Allocator) !void {
     //
     // See: https://github.com/Vladimir-csp/xdg-terminal-exec
     if ((comptime builtin.os.tag == .linux) or (comptime builtin.os.tag == .freebsd)) {
-        if (internal_os.xdg.parseTerminalExec(std.os.argv)) |args| {
+        if (internal_os.xdg.parseTerminalExec(global.args().vector)) |args| {
             const arena_alloc = self._arena.?.allocator();
 
             // First, we add an artificial "-e" so that if we
@@ -4218,7 +4206,7 @@ pub fn loadCliArgs(self: *Config, alloc_gpa: Allocator) !void {
     }
 
     // Initialize our CLI iterator.
-    var iter = try cli.args.argsIterator(alloc_gpa);
+    var iter = try cli.args.argsIterator(alloc_gpa, global.args());
     defer iter.deinit();
     try self.loadIter(alloc_gpa, &iter);
 
@@ -4244,7 +4232,11 @@ pub fn loadCliArgs(self: *Config, alloc_gpa: Allocator) !void {
     // Any paths referenced from the CLI are relative to the current working
     // directory.
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    try self.expandPaths(try std.fs.cwd().realpath(".", &buf));
+    try self.expandPaths(buf[0..try std.Io.Dir.cwd().realPathFile(
+        global.io(),
+        ".",
+        &buf,
+    )]);
 }
 
 /// Load and parse the config files that were added in the "config-file" key.
@@ -4307,7 +4299,7 @@ pub fn loadRecursiveFiles(self: *Config, alloc_gpa: Allocator) !void {
             continue;
         }
 
-        var file = std.fs.openFileAbsolute(path, .{}) catch |err| {
+        var file = std.Io.Dir.openFileAbsolute(global.io(), path, .{}) catch |err| {
             if (err != error.FileNotFound or !optional) {
                 const diag: cli.Diagnostic = .{
                     .message = try std.fmt.allocPrintSentinel(
@@ -4323,9 +4315,9 @@ pub fn loadRecursiveFiles(self: *Config, alloc_gpa: Allocator) !void {
             }
             continue;
         };
-        defer file.close();
+        defer file.close(global.io());
 
-        const stat = try file.stat();
+        const stat = try file.stat(global.io());
         switch (stat.kind) {
             .file => {},
             else => |kind| {
@@ -4470,7 +4462,7 @@ fn loadTheme(self: *Config, theme: Theme) !void {
     )) orelse return;
     const path = themefile.path;
     const file = themefile.file;
-    defer file.close();
+    defer file.close(global.io());
 
     // From this point onwards, we load the theme and do a bit of a dance
     // to achieve two separate goals:
@@ -4492,7 +4484,7 @@ fn loadTheme(self: *Config, theme: Theme) !void {
 
     // Load our theme
     var buf: [2048]u8 = undefined;
-    var file_reader = file.reader(&buf);
+    var file_reader = file.reader(global.io(), &buf);
     const reader = &file_reader.interface;
     var iter: cli.args.LineIterator = .{ .r = reader, .filepath = path };
     try new_config.loadIter(alloc_gpa, &iter);
@@ -4629,15 +4621,19 @@ pub fn finalize(self: *Config) !void {
                 // read from SHELL if we're in a probable CLI environment.
                 if (!probable_cli) break :shell_env;
 
-                if (std.process.getEnvVarOwned(alloc, "SHELL")) |value| {
-                    log.info("default shell source=env value={s}", .{value});
+                const value = global.environ().getAlloc(alloc, "SHELL") catch |err| switch (err) {
+                    error.EnvironmentVariableMissing => break :shell_env,
+                    else => return err,
+                };
+                defer alloc.free(value);
 
-                    const copy = try alloc.dupeZ(u8, value);
-                    self.command = .{ .shell = copy };
+                log.info("default shell source=env value={s}", .{value});
 
-                    // If we don't need the working directory, then we can exit now.
-                    if (wd != .home) break :command;
-                } else |_| {}
+                const copy = try alloc.dupeZ(u8, value);
+                self.command = .{ .shell = copy };
+
+                // If we don't need the working directory, then we can exit now.
+                if (wd != .home) break :command;
             }
 
             switch (builtin.os.tag) {
@@ -4648,8 +4644,10 @@ pub fn finalize(self: *Config) !void {
                     }
 
                     if (wd == .home) {
+                        var environ_map = try global.environMap();
+                        defer environ_map.deinit();
                         var buf: [std.fs.max_path_bytes]u8 = undefined;
-                        if (try internal_os.home(&buf)) |home| {
+                        if (try internal_os.home(&environ_map, &buf)) |home| {
                             wd = .{ .path = try alloc.dupe(u8, home) };
                         } else {
                             wd = .inherit;
@@ -5138,14 +5136,17 @@ fn probableCliEnvironment() bool {
         else => {},
     }
 
-    // If we have TERM_PROGRAM set to a non-empty value, we assume
-    // a graphical terminal environment.
-    if (std.posix.getenv("TERM_PROGRAM")) |v| {
-        if (v.len > 0) return true;
-    }
+    // If we have TERM_PROGRAM set to a non-empty value, we assume a graphical
+    // terminal environment.
+    //
+    // TODO: This is not available on WASI without libc due to the memory
+    // allocation requirement. This restricts this function to said platforms.
+    // To be fair, the legacy getenv path had more restrictive issues (no WASI
+    // period, or Windows for that matter).
+    if (global.environ().containsUnemptyConstant("TERM_PROGRAM")) return true;
 
     // CLI arguments makes things probable
-    if (std.os.argv.len > 1) return true;
+    if (global.args().vector.len > 1) return true;
 
     // Unlikely CLI environment
     return false;
@@ -5373,7 +5374,11 @@ pub const WorkingDirectory = union(enum) {
         if (!std.mem.startsWith(u8, path, "~/")) return;
 
         var buf: [std.fs.max_path_bytes]u8 = undefined;
-        const expanded = internal_os.expandHome(path, &buf) catch |err| {
+        const expanded = expanded: {
+            var environ_map = global.environMap() catch |err| break :expanded err;
+            defer environ_map.deinit();
+            break :expanded internal_os.expandHome(&environ_map, path, &buf);
+        } catch |err| {
             log.warn(
                 "error expanding home directory for working-directory path={s}: {}",
                 .{ path, err },
@@ -5432,6 +5437,8 @@ pub const WorkingDirectory = union(enum) {
         var arena = ArenaAllocator.init(testing.allocator);
         defer arena.deinit();
         const alloc = arena.allocator();
+        var environ_map = try testing.environ.createMap(testing.allocator);
+        defer environ_map.deinit();
 
         {
             var wd: Self = .{ .path = "~/projects/ghostty" };
@@ -5439,6 +5446,7 @@ pub const WorkingDirectory = union(enum) {
 
             var buf: [std.fs.max_path_bytes]u8 = undefined;
             const expected = internal_os.expandHome(
+                &environ_map,
                 "~/projects/ghostty",
                 &buf,
             ) catch "~/projects/ghostty";
@@ -5673,8 +5681,8 @@ pub const BoldColor = union(enum) {
 pub const ColorList = struct {
     const Self = @This();
 
-    colors: std.ArrayListUnmanaged(Color) = .{},
-    colors_c: std.ArrayListUnmanaged(Color.C) = .{},
+    colors: std.ArrayList(Color) = .empty,
+    colors_c: std.ArrayList(Color.C) = .empty,
 
     /// ghostty_config_color_list_s
     pub const C = extern struct {
@@ -5987,7 +5995,7 @@ pub const RepeatableString = struct {
     const Self = @This();
 
     // Allocator for the list is the arena for the parent config.
-    list: std.ArrayListUnmanaged([:0]const u8) = .{},
+    list: std.ArrayList([:0]const u8) = .empty,
 
     // If true, then the next value will clear the list and start over
     // rather than append. This is a bit of a hack but is here to make
@@ -6277,7 +6285,7 @@ pub const RepeatableFontVariation = struct {
     const Self = @This();
 
     // Allocator for the list is the arena for the parent config.
-    list: std.ArrayListUnmanaged(fontpkg.face.Variation) = .{},
+    list: std.ArrayList(fontpkg.face.Variation) = .empty,
 
     pub fn parseCLI(self: *Self, alloc: Allocator, input_: ?[]const u8) !void {
         const input = input_ orelse return error.ValueRequired;
@@ -8560,7 +8568,7 @@ pub const FontShapingBreak = packed struct {
 pub const RepeatableLink = struct {
     const Self = @This();
 
-    links: std.ArrayListUnmanaged(inputpkg.Link) = .{},
+    links: std.ArrayList(inputpkg.Link) = .empty,
 
     pub fn parseCLI(self: *Self, alloc: Allocator, input_: ?[]const u8) !void {
         _ = self;
@@ -10427,23 +10435,23 @@ test "clone can then change conditional state" {
     defer td.deinit();
     var buf: [4096]u8 = undefined;
     {
-        var file = try td.dir.createFile("theme_light", .{});
-        defer file.close();
-        var writer = file.writer(&buf);
+        var file = try td.dir.createFile(testing.io, "theme_light", .{});
+        defer file.close(testing.io);
+        var writer = file.writer(testing.io, &buf);
         try writer.interface.writeAll(@embedFile("testdata/theme_light"));
         try writer.end();
     }
     {
-        var file = try td.dir.createFile("theme_dark", .{});
-        defer file.close();
-        var writer = file.writer(&buf);
+        var file = try td.dir.createFile(testing.io, "theme_dark", .{});
+        defer file.close(testing.io);
+        var writer = file.writer(testing.io, &buf);
         try writer.interface.writeAll(@embedFile("testdata/theme_dark"));
         try writer.end();
     }
     var light_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const light = try td.dir.realpath("theme_light", &light_buf);
+    const light = light_buf[0..try td.dir.realPathFile(testing.io, "theme_light", &light_buf)];
     var dark_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dark = try td.dir.realpath("theme_dark", &dark_buf);
+    const dark = dark_buf[0..try td.dir.realPathFile(testing.io, "theme_dark", &dark_buf)];
 
     var cfg_light = try Config.default(alloc);
     defer cfg_light.deinit();
@@ -10505,6 +10513,8 @@ test "clone preserves conditional set" {
 test "working-directory expands tilde" {
     const testing = std.testing;
     const alloc = testing.allocator;
+    var environ_map = try testing.environ.createMap(testing.allocator);
+    defer environ_map.deinit();
 
     var cfg = try Config.default(alloc);
     defer cfg.deinit();
@@ -10516,6 +10526,7 @@ test "working-directory expands tilde" {
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const expected = internal_os.expandHome(
+        &environ_map,
         "~/projects/ghostty",
         &buf,
     ) catch "~/projects/ghostty";
@@ -10586,14 +10597,14 @@ test "theme loading" {
     defer td.deinit();
     var buf: [4096]u8 = undefined;
     {
-        var file = try td.dir.createFile("theme", .{});
-        defer file.close();
-        var writer = file.writer(&buf);
+        var file = try td.dir.createFile(testing.io, "theme", .{});
+        defer file.close(testing.io);
+        var writer = file.writer(testing.io, &buf);
         try writer.interface.writeAll(@embedFile("testdata/theme_simple"));
         try writer.end();
     }
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = try td.dir.realpath("theme", &path_buf);
+    const path = path_buf[0..try td.dir.realPathFile(testing.io, "theme", &path_buf)];
 
     var cfg = try Config.default(alloc);
     defer cfg.deinit();
@@ -10625,14 +10636,14 @@ test "theme loading preserves conditional state" {
     defer td.deinit();
     var buf: [4096]u8 = undefined;
     {
-        var file = try td.dir.createFile("theme", .{});
-        defer file.close();
-        var writer = file.writer(&buf);
+        var file = try td.dir.createFile(testing.io, "theme", .{});
+        defer file.close(testing.io);
+        var writer = file.writer(testing.io, &buf);
         try writer.interface.writeAll(@embedFile("testdata/theme_simple"));
         try writer.end();
     }
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = try td.dir.realpath("theme", &path_buf);
+    const path = path_buf[0..try td.dir.realPathFile(testing.io, "theme", &path_buf)];
 
     var cfg = try Config.default(alloc);
     defer cfg.deinit();
@@ -10658,14 +10669,14 @@ test "theme priority is lower than config" {
     defer td.deinit();
     var buf: [4096]u8 = undefined;
     {
-        var file = try td.dir.createFile("theme", .{});
-        defer file.close();
-        var writer = file.writer(&buf);
+        var file = try td.dir.createFile(testing.io, "theme", .{});
+        defer file.close(testing.io);
+        var writer = file.writer(testing.io, &buf);
         try writer.interface.writeAll(@embedFile("testdata/theme_simple"));
         try writer.end();
     }
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = try td.dir.realpath("theme", &path_buf);
+    const path = path_buf[0..try td.dir.realPathFile(testing.io, "theme", &path_buf)];
 
     var cfg = try Config.default(alloc);
     defer cfg.deinit();
@@ -10695,23 +10706,23 @@ test "theme loading correct light/dark" {
     defer td.deinit();
     var buf: [4096]u8 = undefined;
     {
-        var file = try td.dir.createFile("theme_light", .{});
-        defer file.close();
-        var writer = file.writer(&buf);
+        var file = try td.dir.createFile(testing.io, "theme_light", .{});
+        defer file.close(testing.io);
+        var writer = file.writer(testing.io, &buf);
         try writer.interface.writeAll(@embedFile("testdata/theme_light"));
         try writer.end();
     }
     {
-        var file = try td.dir.createFile("theme_dark", .{});
-        defer file.close();
-        var writer = file.writer(&buf);
+        var file = try td.dir.createFile(testing.io, "theme_dark", .{});
+        defer file.close(testing.io);
+        var writer = file.writer(testing.io, &buf);
         try writer.interface.writeAll(@embedFile("testdata/theme_dark"));
         try writer.end();
     }
     var light_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const light = try td.dir.realpath("theme_light", &light_buf);
+    const light = light_buf[0..try td.dir.realPathFile(testing.io, "theme_light", &light_buf)];
     var dark_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dark = try td.dir.realpath("theme_dark", &dark_buf);
+    const dark = dark_buf[0..try td.dir.realPathFile(testing.io, "theme_dark", &dark_buf)];
 
     // Light
     {
