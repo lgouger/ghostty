@@ -558,6 +558,29 @@ extension Ghostty {
             )
         }
 
+        /// The dim overlay to draw over a surface, or nil if the surface shouldn't be
+        /// dimmed. At most one dim is ever active on a surface: the window dim replaces
+        /// the split dim, so the two never stack. This mirrors `Config.unfocusedDim` in
+        /// `src/config/Config.zig`; keep the two in sync.
+        ///
+        /// Note that when the window dim is disabled the split dim is still applied to
+        /// an unfocused window so that the split focus distinction is preserved.
+        func unfocusedDim(
+            windowFocused: Bool,
+            surfaceFocused: Bool,
+            isSplit: Bool
+        ) -> (fill: Color, alpha: Double)? {
+            if !windowFocused {
+                let alpha = unfocusedWindowOpacity
+                if alpha > 0 { return (unfocusedWindowFill, alpha) }
+            }
+
+            guard !surfaceFocused && isSplit else { return nil }
+            let alpha = unfocusedSplitOpacity
+            guard alpha > 0 else { return nil }
+            return (unfocusedSplitFill, alpha)
+        }
+
         var splitDividerColor: Color {
             let backgroundColor = OSColor(backgroundColor)
             let isLightBackground = backgroundColor.isLightColor

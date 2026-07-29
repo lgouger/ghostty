@@ -1094,7 +1094,6 @@ palette: Palette = .{},
 /// Specified as either hex (`#RRGGBB` or `RRGGBB`) or a named X11 color.
 @"unfocused-window-fill": ?Color = null,
 
-
 /// The color of the split divider. If this is not set, a default will be chosen.
 /// Specified as either hex (`#RRGGBB` or `RRGGBB`) or a named X11 color.
 ///
@@ -5123,6 +5122,58 @@ fn cloneValue(
             @compileError("unsupported field type");
         },
     }
+}
+
+/// The dimming overlay to draw over a surface to make it look unfocused.
+pub const Dim = struct {
+    /// Which config option this dim originated from. Apprts that render
+    /// the dim from a static stylesheet (GTK) use this to pick the style.
+    source: enum { window, split },
+
+    /// The color of the overlay.
+    fill: Color,
+
+    /// The alpha of the overlay. This is always greater than zero; a
+    /// disabled dim is represented by a null `Dim`.
+    alpha: f64,
+};
+
+/// The focus state of a surface, used to determine its dim. See
+/// `unfocusedDim`.
+pub const Focus = struct {
+    /// The window containing the surface has focus.
+    window: bool,
+    /// The surface itself has focus.
+    surface: bool,
+    /// The surface is part of a split.
+    split: bool,
+};
+
+/// Returns the dimming overlay to draw over a surface, or null if the
+/// surface shouldn't be dimmed at all. At most one dim is ever active on a
+/// surface: the window dim replaces the split dim, so the two never stack.
+///
+/// Note that when the window dim is disabled the split dim is still applied
+/// to an unfocused window so that the split focus distinction is preserved.
+pub fn unfocusedDim(self: *const Config, focus: Focus) ?Dim {
+    if (!focus.window) window: {
+        const alpha = 1.0 - self.@"unfocused-window-opacity";
+        if (alpha <= 0) break :window;
+        return .{
+            .source = .window,
+            .fill = self.@"unfocused-window-fill" orelse self.background,
+            .alpha = alpha,
+        };
+    }
+
+    if (focus.surface or !focus.split) return null;
+    const alpha = 1.0 - self.@"unfocused-split-opacity";
+    if (alpha <= 0) return null;
+    return .{
+        .source = .split,
+        .fill = self.@"unfocused-split-fill" orelse self.background,
+        .alpha = alpha,
+    };
 }
 
 /// Returns an iterator that goes through each changed field from
@@ -10594,6 +10645,92 @@ test "working-directory expands tilde" {
         &buf,
     ) catch "~/projects/ghostty";
     try testing.expectEqualStrings(expected, cfg.@"working-directory".?.value().?);
+}
+
+test "unfocusedDim" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    const split_fill: Color = .{ .r = 1, .g = 2, .b = 3 };
+    const window_fill: Color = .{ .r = 4, .g = 5, .b = 6 };
+
+    var cfg = try Config.default(alloc);
+    defer cfg.deinit();
+    cfg.@"unfocused-split-opacity" = 0.7;
+    cfg.@"unfocused-split-fill" = split_fill;
+    cfg.@"unfocused-window-fill" = window_fill;
+
+    const S = struct {
+        fn expectDim(
+            expected_source: @FieldType(Dim, "source"),
+            expected_fill: Color,
+            expected_alpha: f64,
+            actual: ?Dim,
+        ) !void {
+            const dim = actual orelse return error.TestExpectedDim;
+            try testing.expectEqual(expected_source, dim.source);
+            try testing.expectEqual(expected_fill, dim.fill);
+            try testing.expectApproxEqAbs(expected_alpha, dim.alpha, 0.0001);
+        }
+    };
+
+    const focused_split: Focus = .{ .window = true, .surface = true, .split = true };
+    const unfocused_split: Focus = .{ .window = true, .surface = false, .split = true };
+    const single: Focus = .{ .window = true, .surface = true, .split = false };
+
+    // Window dim disabled (the default), so only splits dim.
+    try testing.expect(cfg.unfocusedDim(single) == null);
+    try testing.expect(cfg.unfocusedDim(focused_split) == null);
+    try S.expectDim(.split, split_fill, 0.3, cfg.unfocusedDim(unfocused_split));
+
+    // A surface that isn't part of a split never gets the split dim, even
+    // if it somehow doesn't have focus.
+    try testing.expect(cfg.unfocusedDim(.{
+        .window = true,
+        .surface = false,
+        .split = false,
+    }) == null);
+
+    // Window unfocused with the window dim disabled: the split dim still
+    // applies so the split focus distinction is preserved.
+    try testing.expect(cfg.unfocusedDim(.{ .window = false, .surface = true, .split = false }) == null);
+    try S.expectDim(.split, split_fill, 0.3, cfg.unfocusedDim(.{
+        .window = false,
+        .surface = false,
+        .split = true,
+    }));
+
+    // Window dim enabled: it replaces the split dim, never stacks with it.
+    cfg.@"unfocused-window-opacity" = 0.8;
+    for ([_]Focus{
+        .{ .window = false, .surface = true, .split = false },
+        .{ .window = false, .surface = true, .split = true },
+        .{ .window = false, .surface = false, .split = true },
+    }) |focus| {
+        try S.expectDim(.window, window_fill, 0.2, cfg.unfocusedDim(focus));
+    }
+    try testing.expect(cfg.unfocusedDim(single) == null);
+    try S.expectDim(.split, split_fill, 0.3, cfg.unfocusedDim(unfocused_split));
+
+    // Split dim disabled.
+    cfg.@"unfocused-split-opacity" = 1.0;
+    try testing.expect(cfg.unfocusedDim(unfocused_split) == null);
+    try S.expectDim(.window, window_fill, 0.2, cfg.unfocusedDim(.{
+        .window = false,
+        .surface = false,
+        .split = true,
+    }));
+
+    // Fills default to the background color.
+    cfg.@"unfocused-split-opacity" = 0.7;
+    cfg.@"unfocused-split-fill" = null;
+    cfg.@"unfocused-window-fill" = null;
+    try S.expectDim(.split, cfg.background, 0.3, cfg.unfocusedDim(unfocused_split));
+    try S.expectDim(.window, cfg.background, 0.2, cfg.unfocusedDim(.{
+        .window = false,
+        .surface = true,
+        .split = false,
+    }));
 }
 
 test "changed" {

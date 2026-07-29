@@ -871,11 +871,8 @@ pub const Surface = extern struct {
     }
 
     /// Callback used to determine whether unfocused-split-fill / unfocused-split-opacity
-    /// should be applied to the surface. The split overlay is suppressed when the window
-    /// overlay is active (window inactive and unfocused-window-opacity < 1.0) so that both
-    /// effects never stack on the same surface. If window opacity is disabled (>= 1.0),
-    /// we still show the split overlay when the window is inactive so the focus distinction
-    /// is preserved.
+    /// should be applied to the surface. See Config.unfocusedDim for the rules that
+    /// decide which dim (if any) applies to a surface.
     fn closureShouldUnfocusedSplitBeShown(
         self: *Self,
         search_active: c_int,
@@ -883,16 +880,13 @@ pub const Surface = extern struct {
         is_split: c_int,
         window_active: c_int,
     ) callconv(.c) c_int {
-        if (search_active != 0 or focused != 0 or is_split == 0) return 0;
-        // Window is active: always show split overlay on unfocused splits.
-        if (window_active != 0) return 1;
-        // Window is inactive: only suppress split overlay when window opacity is active
-        // (< 1.0), because the window overlay replaces it. If window opacity is disabled
-        // (>= 1.0), keep showing the split overlay so focus distinction is preserved.
-        const priv = self.private();
-        const config = priv.config orelse return 0;
-        const opacity = config.get().@"unfocused-window-opacity";
-        return @intFromBool(opacity >= 1.0);
+        if (search_active != 0) return 0;
+        const dim = self.unfocusedDim(.{
+            .window = window_active != 0,
+            .surface = focused != 0,
+            .split = is_split != 0,
+        }) orelse return 0;
+        return @intFromBool(dim.source == .split);
     }
 
     /// Callback used to determine whether unfocused-window-fill / unfocused-window-opacity
@@ -901,16 +895,22 @@ pub const Surface = extern struct {
         self: *Self,
         window_active: c_int,
     ) callconv(.c) c_int {
-        // Only show overlay if window is not active AND opacity is less than 1.0
-        // (1.0 means fully opaque window = no dimming effect)
+        const dim = self.unfocusedDim(.{
+            .window = window_active != 0,
+            .surface = true,
+            .split = false,
+        }) orelse return 0;
+        return @intFromBool(dim.source == .window);
+    }
+
+    /// The dim to apply to this surface, if any, given its focus state.
+    fn unfocusedDim(
+        self: *Self,
+        focus: configpkg.Config.Focus,
+    ) ?configpkg.Config.Dim {
         const priv = self.private();
-        const config = priv.config orelse return 0;
-        const opacity = config.get().@"unfocused-window-opacity";
-
-        // Don't show overlay if opacity is 1.0 (disabled)
-        if (opacity >= 1.0) return 0;
-
-        return @intFromBool(window_active == 0);
+        const config = priv.config orelse return null;
+        return config.get().unfocusedDim(focus);
     }
 
     pub fn toggleFullscreen(self: *Self) void {

@@ -187,36 +187,19 @@ extension Ghostty {
                     SurfaceErrorView()
                 }
 
-                // If we're part of a split view and don't have focus, we put a semi-transparent
-                // rectangle above our view to make it look unfocused. We include the last
-                // focused surface so this still works while SwiftUI focus is temporarily nil.
-                // We suppress this when the window overlay is active (window lost focus AND
-                // window opacity is enabled) so that both effects never stack on the same surface.
-                // If window opacity is disabled (overlayOpacity == 0), we still show split
-                // overlay even when the window is unfocused so the focus distinction is preserved.
-                let windowOverlayActive = !windowFocus && ghostty.config.unfocusedWindowOpacity > 0
-                if !windowOverlayActive && isSplit && !isFocusedSurface {
-                    let overlayOpacity = ghostty.config.unfocusedSplitOpacity
-                    if overlayOpacity > 0 {
-                        Rectangle()
-                            .fill(ghostty.config.unfocusedSplitFill)
-                            .allowsHitTesting(false)
-                            .opacity(overlayOpacity)
-                    }
-                }
-
-                // If our window doesn't have focus, we put a semi-transparent black
-                // rectangle above our view to make it look unfocused. This applies
-                // uniformly to ALL surfaces in the window, replacing the per-split
-                // overlay above so that both effects never stack on the same surface.
-                if !windowFocus {
-                    let overlayOpacity = ghostty.config.unfocusedWindowOpacity
-                    if overlayOpacity > 0 {
-                        Rectangle()
-                            .fill(ghostty.config.unfocusedWindowFill)
-                            .allowsHitTesting(false)
-                            .opacity(overlayOpacity)
-                    }
+                // Dim the surface if its window is unfocused, or if it's an unfocused
+                // pane of a split. At most one dim is applied; see Config.unfocusedDim.
+                // We include the last focused surface so this still works while SwiftUI
+                // focus is temporarily nil.
+                if let dim = ghostty.config.unfocusedDim(
+                    windowFocused: windowFocus,
+                    surfaceFocused: isFocusedSurface,
+                    isSplit: isSplit
+                ) {
+                    Rectangle()
+                        .fill(dim.fill)
+                        .allowsHitTesting(false)
+                        .opacity(dim.alpha)
                 }
 
                 #if canImport(AppKit)

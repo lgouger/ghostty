@@ -885,37 +885,35 @@ pub const Application = extern struct {
         try loadRuntimeCss414(config, writer);
         try loadRuntimeCss416(config, writer);
 
-        const unfocused_fill: CoreConfig.Color = config.@"unfocused-split-fill" orelse config.background;
+        // Both dim styles are generated from the same core rule so that the
+        // fill fallback and opacity math live in exactly one place. The focus
+        // state below just selects which dim we're asking for.
+        if (config.unfocusedDim(.{
+            .window = true,
+            .surface = false,
+            .split = true,
+        })) |dim| {
+            try writer.print(
+                \\widget.unfocused-split {{
+                \\ opacity: {d:.2};
+                \\ background-color: rgb({d},{d},{d});
+                \\}}
+                \\
+            , .{ dim.alpha, dim.fill.r, dim.fill.g, dim.fill.b });
+        }
 
-        try writer.print(
-            \\widget.unfocused-split {{
-            \\ opacity: {d:.2};
-            \\ background-color: rgb({d},{d},{d});
-            \\}}
-            \\
-        , .{
-            1.0 - config.@"unfocused-split-opacity",
-            unfocused_fill.r,
-            unfocused_fill.g,
-            unfocused_fill.b,
-        });
-
-        // Only generate unfocused-window CSS if the feature is enabled (opacity < 1.0)
-        if (config.@"unfocused-window-opacity" < 1.0) {
-            const unfocused_window_fill: CoreConfig.Color = config.@"unfocused-window-fill" orelse config.background;
-
+        if (config.unfocusedDim(.{
+            .window = false,
+            .surface = true,
+            .split = false,
+        })) |dim| {
             try writer.print(
                 \\widget.unfocused-window {{
                 \\ opacity: {d:.2};
                 \\ background-color: rgb({d},{d},{d});
                 \\}}
                 \\
-            , .{
-                1.0 - config.@"unfocused-window-opacity",
-                unfocused_window_fill.r,
-                unfocused_window_fill.g,
-                unfocused_window_fill.b,
-            });
+            , .{ dim.alpha, dim.fill.r, dim.fill.g, dim.fill.b });
         }
 
         if (config.@"split-divider-color") |color| {
