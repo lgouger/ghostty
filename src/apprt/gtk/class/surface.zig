@@ -874,14 +874,16 @@ pub const Surface = extern struct {
     /// should be applied to the surface. See Config.unfocusedDim for the rules that
     /// decide which dim (if any) applies to a surface.
     fn closureShouldUnfocusedSplitBeShown(
-        self: *Self,
+        _: *Self,
+        config_: ?*Config,
         search_active: c_int,
         focused: c_int,
         is_split: c_int,
         window_active: c_int,
     ) callconv(.c) c_int {
         if (search_active != 0) return 0;
-        const dim = self.unfocusedDim(.{
+        const config = config_ orelse return 0;
+        const dim = config.get().unfocusedDim(.{
             .window = window_active != 0,
             .surface = focused != 0,
             .split = is_split != 0,
@@ -892,25 +894,17 @@ pub const Surface = extern struct {
     /// Callback used to determine whether unfocused-window-fill / unfocused-window-opacity
     /// should be applied to the surface
     fn closureShouldUnfocusedWindowBeShown(
-        self: *Self,
+        _: *Self,
+        config_: ?*Config,
         window_active: c_int,
     ) callconv(.c) c_int {
-        const dim = self.unfocusedDim(.{
+        const config = config_ orelse return 0;
+        const dim = config.get().unfocusedDim(.{
             .window = window_active != 0,
             .surface = true,
             .split = false,
         }) orelse return 0;
         return @intFromBool(dim.source == .window);
-    }
-
-    /// The dim to apply to this surface, if any, given its focus state.
-    fn unfocusedDim(
-        self: *Self,
-        focus: configpkg.Config.Focus,
-    ) ?configpkg.Config.Dim {
-        const priv = self.private();
-        const config = priv.config orelse return null;
-        return config.get().unfocusedDim(focus);
     }
 
     pub fn toggleFullscreen(self: *Self) void {
