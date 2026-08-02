@@ -718,6 +718,16 @@ pub const Surface = extern struct {
         // True if the parent window is active (has focus)
         window_active: bool = true,
 
+        // The window we're currently watching for `is-active` changes, along
+        // with the handler ID for that subscription. We hold a strong ref
+        // because the window may unparent us (e.g. when a split closes) before
+        // we get a chance to disconnect, and we can't look up the ancestor
+        // once that has happened. Must be disconnected before we're freed:
+        // the window outlives us and would otherwise call back into freed
+        // memory. See connect/disconnectWindowActiveSignal.
+        active_window: ?*Window = null,
+        window_active_handler: c_ulong = 0,
+
         action_group: ?*gio.SimpleActionGroup = null,
 
         // Gtk.Scrollable interface adjustments
@@ -1905,6 +1915,11 @@ pub const Surface = extern struct {
 
     fn dispose(self: *Self) callconv(.c) void {
         const priv = self.private();
+
+        // Safety net in case we're disposed without being unrealized first.
+        // The window outlives us, so a lingering handler would call back
+        // into freed memory.
+        self.disconnectWindowActiveSignal();
 
         if (priv.config) |v| {
             v.unref();
@@ -3336,23 +3351,43 @@ pub const Surface = extern struct {
     }
 
     fn connectWindowActiveSignal(self: *Self) void {
-        const widget = self.as(gtk.Widget);
+        const priv = self.private();
+
+        // We can be realized more than once (e.g. if we're moved to another
+        // window), so make sure we're not already subscribed.
+        if (priv.active_window != null) return;
 
         // Get the parent window using getAncestor
-        const window = ext.getAncestor(Window, widget) orelse return;
+        const window = ext.getAncestor(Window, self.as(gtk.Widget)) orelse return;
 
         // Get initial window active state
-        const priv = self.private();
         priv.window_active = window.as(gtk.Window).isActive() != 0;
 
-        // Connect to notify::is-active signal
-        _ = gobject.Object.signals.notify.connect(
-            window.as(gobject.Object).as(gobject.Object),
+        _ = window.as(gobject.Object).ref();
+        priv.active_window = window;
+        priv.window_active_handler = gobject.Object.signals.notify.connect(
+            window.as(gobject.Object),
             *Self,
             windowActiveChanged,
             self,
-            .{},
+            .{ .detail = "is-active" },
         );
+    }
+
+    fn disconnectWindowActiveSignal(self: *Self) void {
+        const priv = self.private();
+        const window = priv.active_window orelse return;
+
+        if (priv.window_active_handler != 0) {
+            gobject.signalHandlerDisconnect(
+                window.as(gobject.Object),
+                priv.window_active_handler,
+            );
+            priv.window_active_handler = 0;
+        }
+
+        window.as(gobject.Object).unref();
+        priv.active_window = null;
     }
 
     fn windowActiveChanged(
@@ -3361,10 +3396,7 @@ pub const Surface = extern struct {
         self: *Self,
     ) callconv(.c) void {
         const priv = self.private();
-
-        // Get window from widget ancestor
-        const widget = self.as(gtk.Widget);
-        const window = ext.getAncestor(Window, widget) orelse return;
+        const window = priv.active_window orelse return;
         const is_active = window.as(gtk.Window).isActive() != 0;
 
         if (priv.window_active != is_active) {
@@ -3378,6 +3410,10 @@ pub const Surface = extern struct {
         self: *Self,
     ) callconv(.c) void {
         log.debug("unrealize", .{});
+
+        // Stop watching our window's active state. We may be realized again
+        // into a different window later.
+        self.disconnectWindowActiveSignal();
 
         // Notify our core surface
         const priv = self.private();
