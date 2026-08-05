@@ -908,10 +908,10 @@ palette: Palette = .{},
 /// Enables the ability to move the cursor at prompts by clicking on a
 /// location in the prompt text.
 ///
-/// This feature requires shell integration, specifically prompt marking
-/// via `OSC 133`. Some shells like Fish (v4) and Nu (0.111+) natively
-/// support this while others may require additional configuration or
-/// Ghostty's shell integration features to be enabled.
+/// This feature requires prompt marking via `OSC 133`. Some shells like Fish
+/// (v4.1+) and Nu (0.111+) natively support this while others may require
+/// additional configuration or Ghostty's shell integration features to be
+/// enabled.
 ///
 /// Depending on the shell, this works either by translating your click
 /// position into a series of synthetic arrow key movements or by sending
@@ -4706,7 +4706,7 @@ pub fn finalize(self: *Config) !void {
                         var environ_map = try global.environMap();
                         defer environ_map.deinit();
                         var buf: [std.fs.max_path_bytes]u8 = undefined;
-                        if (try internal_os.home(&environ_map, &buf)) |home| {
+                        if (try internal_os.home(global.io(), &environ_map, &buf)) |home| {
                             wd = .{ .path = try alloc.dupe(u8, home) };
                         } else {
                             wd = .inherit;
@@ -5491,7 +5491,7 @@ pub const WorkingDirectory = union(enum) {
         const expanded = expanded: {
             var environ_map = global.environMap() catch |err| break :expanded err;
             defer environ_map.deinit();
-            break :expanded internal_os.expandHome(&environ_map, path, &buf);
+            break :expanded internal_os.expandHome(global.io(), &environ_map, path, &buf);
         } catch |err| {
             log.warn(
                 "error expanding home directory for working-directory path={s}: {}",
@@ -5560,6 +5560,7 @@ pub const WorkingDirectory = union(enum) {
 
             var buf: [std.fs.max_path_bytes]u8 = undefined;
             const expected = internal_os.expandHome(
+                testing.io,
                 &environ_map,
                 "~/projects/ghostty",
                 &buf,
@@ -8822,8 +8823,20 @@ pub const RepeatableCommand = struct {
             self.value.deinit(alloc);
             self.value_c.deinit(alloc);
         }
-        try self.value.appendSlice(alloc, inputpkg.command.defaults);
-        try self.value_c.appendSlice(alloc, inputpkg.command.defaultsC);
+        try self.value.ensureUnusedCapacity(alloc, inputpkg.command.defaults.len);
+        try self.value_c.ensureUnusedCapacity(alloc, inputpkg.command.defaults.len);
+        for (inputpkg.command.defaults) |cmd| {
+            // Translation is currently a GTK-only feature. In particular,
+            // translating these shared strings for the embedded runtime gives
+            // the macOS app a localized command palette in an otherwise
+            // unlocalized UI.
+            const localized = if (comptime build_config.app_runtime == .gtk)
+                cmd.translated()
+            else
+                cmd;
+            self.value.appendAssumeCapacity(localized);
+            self.value_c.appendAssumeCapacity(try localized.cval(alloc));
+        }
     }
 
     pub fn parseCLI(
@@ -10626,6 +10639,7 @@ test "clone preserves conditional set" {
 
 test "working-directory expands tilde" {
     const testing = std.testing;
+    const io = testing.io;
     const alloc = testing.allocator;
     var environ_map = try testing.environ.createMap(testing.allocator);
     defer environ_map.deinit();
@@ -10640,6 +10654,7 @@ test "working-directory expands tilde" {
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const expected = internal_os.expandHome(
+        io,
         &environ_map,
         "~/projects/ghostty",
         &buf,
