@@ -26,6 +26,7 @@
 12ya
 -4rh1t3ct0r7
 52dyd
+a-lang
 aalhendi
 aaron-ang
 abdurrahmanski
@@ -127,6 +128,7 @@ gagbo
 ghokun
 gmile
 gordonbondon
+gotenksin
 gpanders
 guilhermetk
 -guysoft LLM communication (likely automated)
