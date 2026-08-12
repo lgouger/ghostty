@@ -709,6 +709,7 @@ pub const Surface = extern struct {
         // True if the current surface is a split, this is used to apply
         // unfocused-split-* options
         is_split: bool = false,
+        is_split_binding: ?*gobject.Binding = null,
 
         // True if the parent window is active (has focus)
         window_active: bool = true,
@@ -876,6 +877,18 @@ pub const Surface = extern struct {
         };
 
         return @intFromBool(config.@"bell-features".border);
+    }
+
+    pub fn bindIsSplit(self: *Self, tree: *SplitTree) void {
+        const priv = self.private();
+        if (priv.is_split_binding) |bind| bind.unbind();
+
+        priv.is_split_binding = tree.as(gobject.Object).bindProperty(
+            "is-split",
+            self.as(gobject.Object),
+            "is-split",
+            .{ .sync_create = true },
+        );
     }
 
     /// Callback used to determine whether unfocused-split-fill / unfocused-split-opacity
@@ -3774,6 +3787,21 @@ pub const Surface = extern struct {
         };
     }
 
+    fn closureShouldDragHandleBeShown(
+        _: *Self,
+        config_: ?*Config,
+        is_split: c_int,
+    ) callconv(.c) c_int {
+        const config = config_ orelse return @intFromBool(false);
+
+        const shown = switch (config.get().@"drag-handle") {
+            .always => true,
+            .auto => is_split != 0,
+            .never => false,
+        };
+        return @intFromBool(shown);
+    }
+
     fn surfaceDragPrepare(
         src: *gtk.DragSource,
         x: f64,
@@ -3846,7 +3874,6 @@ pub const Surface = extern struct {
         const dropped = self.core().?.app.findSurfaceByID(dropped_id) orelse return;
         const from = dropped.rt_surface.gobj();
 
-        // TODO: Find a better way to access the split tree from here
         const st = ext.getAncestor(
             SplitTree,
             self.as(gtk.Widget),
@@ -4017,6 +4044,7 @@ pub const Surface = extern struct {
             class.bindTemplateCallback("search_changed", &searchChanged);
             class.bindTemplateCallback("search_next_match", &searchNextMatch);
             class.bindTemplateCallback("search_previous_match", &searchPreviousMatch);
+            class.bindTemplateCallback("should_drag_handle_be_shown", &closureShouldDragHandleBeShown);
             class.bindTemplateCallback("surface_drag_prepare", &surfaceDragPrepare);
             class.bindTemplateCallback("surface_drag_begin", &surfaceDragBegin);
             class.bindTemplateCallback("surface_drop", &surfaceDrop);
