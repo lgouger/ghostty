@@ -110,6 +110,7 @@ drepper
 dzhlobo
 ekaterinepapava
 elias8
+elitex45
 -enkr1
 enzowilliam
 ephemera
@@ -255,6 +256,7 @@ poweruser64
 prakhar54-byte
 prihlop
 priyans-hu
+pssalman
 puzza007
 qappell
 quinnypig
@@ -323,4 +325,5 @@ ydah
 zenangst
 zenyr
 zeshi09
+zlitus
 zubb
