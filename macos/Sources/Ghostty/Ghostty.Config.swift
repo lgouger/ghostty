@@ -487,11 +487,15 @@ extension Ghostty {
             return BackgroundBlur(fromCValue: v)
         }
 
+        /// The alpha of the unfocused window dim overlay. Zero means the
+        /// `unfocused-window-opacity` option is unset and the feature is
+        /// disabled entirely.
         var unfocusedWindowOpacity: Double {
-            guard let config = self.config else { return 1 }
-            var opacity: Double = 1.00
+            guard let config = self.config else { return 0 }
+            var opacity: Double = 0.0
             let key = "unfocused-window-opacity"
             _ = ghostty_config_get(config, &opacity, key, UInt(key.lengthOfBytes(using: .utf8)))
+            guard opacity > 0 else { return 0 }
             return 1 - opacity
         }
 

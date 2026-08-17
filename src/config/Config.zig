@@ -1074,16 +1074,18 @@ palette: Palette = .{},
 
 /// The opacity level (opposite of transparency) of an unfocused window.
 /// When a window loses focus, all surfaces in the window are dimmed by this amount
-/// to make it easier to see which window has focus. To disable this feature, set
-/// this value to 1.
+/// to make it easier to see which window has focus.
 ///
-/// A value of 1 is fully opaque (no dimming) and a value of 0 is fully transparent.
-/// Because "0" is not useful (it makes the window look very weird), the minimum value
-/// is 0.15. This value still looks weird but you can at least see what's going on.
-/// A value outside of the range 0.15 to 1 will be clamped to the nearest valid value.
+/// A value of 0 (the default when this option is not set) disables this
+/// feature completely: window opacity is never changed when a window loses
+/// focus.
 ///
-/// When set to 1 (the default), this feature is disabled completely.
-@"unfocused-window-opacity": f64 = 1.0,
+/// Any other value enables the feature and must be in the range 0.15 to 1,
+/// where 1 is fully opaque (no visible dimming) and lower values dim the
+/// window more. Because values below 0.15 make the window look very weird,
+/// a non-zero value outside of the range 0.15 to 1 will be clamped to the
+/// nearest valid value.
+@"unfocused-window-opacity": f64 = 0.0,
 
 /// The color to dim an unfocused window. Unfocused windows are dimmed by
 /// rendering a semi-transparent rectangle over the split. This sets the color of
@@ -4809,8 +4811,12 @@ pub fn finalize(self: *Config) !void {
     // Clamp our split opacity
     self.@"unfocused-split-opacity" = @min(1.0, @max(0.15, self.@"unfocused-split-opacity"));
 
-    // Clamp our window opacity
-    self.@"unfocused-window-opacity" = @min(1.0, @max(0.15, self.@"unfocused-window-opacity"));
+    // Clamp our window opacity. Zero (or less) disables the feature
+    // entirely; any other value is clamped to the valid range.
+    self.@"unfocused-window-opacity" = if (self.@"unfocused-window-opacity" <= 0)
+        0
+    else
+        @min(1.0, @max(0.15, self.@"unfocused-window-opacity"));
 
     // Clamp our contrast
     self.@"minimum-contrast" = @min(21, @max(1, self.@"minimum-contrast"));
@@ -5192,7 +5198,10 @@ pub const Focus = struct {
 /// to an unfocused window so that the split focus distinction is preserved.
 pub fn unfocusedDim(self: *const Config, focus: Focus) ?Dim {
     if (!focus.window) window: {
-        const alpha = 1.0 - self.@"unfocused-window-opacity";
+        // Zero means the option is unset and the feature is disabled.
+        const opacity = self.@"unfocused-window-opacity";
+        if (opacity <= 0) break :window;
+        const alpha = 1.0 - opacity;
         if (alpha <= 0) break :window;
         return .{
             .source = .window,
@@ -10768,6 +10777,21 @@ test "unfocusedDim" {
     }
     try testing.expect(cfg.unfocusedDim(single) == null);
     try S.expectDim(.split, split_fill, 0.3, cfg.unfocusedDim(unfocused_split));
+
+    // Window opacity of 1 is enabled but fully opaque, so no dim is drawn;
+    // the split dim still applies.
+    cfg.@"unfocused-window-opacity" = 1.0;
+    try testing.expect(cfg.unfocusedDim(.{ .window = false, .surface = true, .split = false }) == null);
+    try S.expectDim(.split, split_fill, 0.3, cfg.unfocusedDim(.{
+        .window = false,
+        .surface = false,
+        .split = true,
+    }));
+
+    // Window opacity of 0 (unset) disables the window dim entirely.
+    cfg.@"unfocused-window-opacity" = 0.0;
+    try testing.expect(cfg.unfocusedDim(.{ .window = false, .surface = true, .split = false }) == null);
+    cfg.@"unfocused-window-opacity" = 0.8;
 
     // Split dim disabled.
     cfg.@"unfocused-split-opacity" = 1.0;
