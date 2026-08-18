@@ -487,15 +487,19 @@ extension Ghostty {
             return BackgroundBlur(fromCValue: v)
         }
 
-        /// The alpha of the unfocused window dim overlay. Zero means the
-        /// `unfocused-window-opacity` option is unset and the feature is
-        /// disabled entirely.
-        var unfocusedWindowOpacity: Double {
-            guard let config = self.config else { return 0 }
+        /// The alpha of the unfocused window dim overlay, or nil if the
+        /// `unfocused-window-opacity` option is unset (0) and the feature is
+        /// disabled entirely. Note the returned alpha can still be 0 when the
+        /// feature is enabled but the opacity is set to 1 (fully opaque /
+        /// full intensity) — callers must distinguish "disabled" (nil) from
+        /// "enabled with no visible dim" (0) since the former falls back to
+        /// the split dim and the latter overrides it.
+        var unfocusedWindowOpacity: Double? {
+            guard let config = self.config else { return nil }
             var opacity: Double = 0.0
             let key = "unfocused-window-opacity"
             _ = ghostty_config_get(config, &opacity, key, UInt(key.lengthOfBytes(using: .utf8)))
-            guard opacity > 0 else { return 0 }
+            guard opacity > 0 else { return nil }
             return 1 - opacity
         }
 
@@ -547,16 +551,19 @@ extension Ghostty {
         /// the split dim, so the two never stack. This mirrors `Config.unfocusedDim` in
         /// `src/config/Config.zig`; keep the two in sync.
         ///
-        /// Note that when the window dim is disabled the split dim is still applied to
-        /// an unfocused window so that the split focus distinction is preserved.
+        /// Note that when the window dim feature is disabled (`unfocused-window-opacity`
+        /// is unset) the split dim is still applied to an unfocused window so that the
+        /// split focus distinction is preserved. But when the window dim feature is
+        /// enabled, it always takes precedence over the split dim for that window, even
+        /// when the opacity is 1 and the resulting alpha is zero (nothing is drawn).
         func unfocusedDim(
             windowFocused: Bool,
             surfaceFocused: Bool,
             isSplit: Bool
         ) -> (fill: Color, alpha: Double)? {
-            if !windowFocused {
-                let alpha = unfocusedWindowOpacity
-                if alpha > 0 { return (unfocusedWindowFill, alpha) }
+            if !windowFocused, let alpha = unfocusedWindowOpacity {
+                guard alpha > 0 else { return nil }
+                return (unfocusedWindowFill, alpha)
             }
 
             guard !surfaceFocused && isSplit else { return nil }

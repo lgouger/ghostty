@@ -5218,20 +5218,30 @@ pub const Focus = struct {
 /// surface shouldn't be dimmed at all. At most one dim is ever active on a
 /// surface: the window dim replaces the split dim, so the two never stack.
 ///
-/// Note that when the window dim is disabled the split dim is still applied
-/// to an unfocused window so that the split focus distinction is preserved.
+/// Note that when the window dim feature is disabled (`unfocused-window-opacity`
+/// is unset, i.e. 0) the split dim is still applied to an unfocused window so
+/// that the split focus distinction is preserved. But when the window dim
+/// feature is enabled (`unfocused-window-opacity` is set to any value from
+/// 0.15 to 1), it always takes precedence over the split dim for that window,
+/// even at 1 where the resulting alpha is zero and nothing is drawn.
 pub fn unfocusedDim(self: *const Config, focus: Focus) ?Dim {
-    if (!focus.window) window: {
-        // Zero means the option is unset and the feature is disabled.
+    if (!focus.window) {
+        // Zero means the option is unset and the feature is disabled,
+        // so we fall through to the split dim below. Any other value
+        // means the feature is enabled and takes precedence over the
+        // split dim for the rest of this window, even when the
+        // resulting alpha is zero (opacity == 1.0, i.e. full intensity
+        // / no visible dim).
         const opacity = self.@"unfocused-window-opacity";
-        if (opacity <= 0) break :window;
-        const alpha = 1.0 - opacity;
-        if (alpha <= 0) break :window;
-        return .{
-            .source = .window,
-            .fill = self.@"unfocused-window-fill" orelse self.background,
-            .alpha = alpha,
-        };
+        if (opacity > 0) {
+            const alpha = 1.0 - opacity;
+            if (alpha <= 0) return null;
+            return .{
+                .source = .window,
+                .fill = self.@"unfocused-window-fill" orelse self.background,
+                .alpha = alpha,
+            };
+        }
     }
 
     if (focus.surface or !focus.split) return null;
@@ -10831,15 +10841,16 @@ test "unfocusedDim" {
     try testing.expect(cfg.unfocusedDim(single) == null);
     try S.expectDim(.split, split_fill, 0.3, cfg.unfocusedDim(unfocused_split));
 
-    // Window opacity of 1 is enabled but fully opaque, so no dim is drawn;
-    // the split dim still applies.
+    // Window opacity of 1 is enabled but fully opaque: no dim is drawn at
+    // all, and it still takes precedence over the split dim (unlike the
+    // disabled/unset case above, where the split dim shows through).
     cfg.@"unfocused-window-opacity" = 1.0;
     try testing.expect(cfg.unfocusedDim(.{ .window = false, .surface = true, .split = false }) == null);
-    try S.expectDim(.split, split_fill, 0.3, cfg.unfocusedDim(.{
+    try testing.expect(cfg.unfocusedDim(.{
         .window = false,
         .surface = false,
         .split = true,
-    }));
+    }) == null);
 
     // Window opacity of 0 (unset) disables the window dim entirely.
     cfg.@"unfocused-window-opacity" = 0.0;
