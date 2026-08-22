@@ -51,6 +51,7 @@ anhthang
 anmitalidev
 anthonyzhoon
 aprilnea
+arneshbanerjee
 arvin7liu
 athaapa
 atomk
@@ -73,6 +74,7 @@ bo2themax
 bousii
 brentschroeter
 brianc442
+by-nelson
 c0x0o
 carldaws
 carlvillads
@@ -98,6 +100,7 @@ deblasis
 dervedro
 devsunb
 diaaeddin
+-didouougha slingshotting LLM output
 diego-moment
 diegoarmstrong
 dkinzler
@@ -304,6 +307,7 @@ thirstycrow
 thoutbeckers
 ticclick
 tnagatomi
+tothedarktowercame
 trag1c
 tristan957
 tsacha
