@@ -22,6 +22,7 @@ const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const global = @import("global.zig");
 const oni = @import("oniguruma");
+const simd = @import("simd/main.zig");
 const crash = @import("crash/main.zig");
 const unicode = @import("unicode/main.zig");
 const rendererpkg = @import("renderer.zig");
@@ -1062,6 +1063,8 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
         },
 
         .kitty_clipboard_read => |req| try self.kittyClipboardRead(req),
+
+        .kitty_clipboard_write => |req| try self.kittyClipboardWrite(req),
 
         .clipboard_write => |w| switch (w.req) {
             .small => |v| try self.clipboardWrite(v.data[0..v.len], w.clipboard_type),
@@ -2192,34 +2195,18 @@ fn clipboardWrite(self: *const Surface, data: []const u8, loc: apprt.Clipboard) 
         return;
     }
 
-    const dec = std.base64.standard.Decoder;
-
-    // Build buffer
-    const size = dec.calcSizeForSlice(data) catch |err| switch (err) {
-        error.InvalidPadding => {
-            log.info("application sent invalid base64 data for OSC 52", .{});
-            return;
-        },
-
-        // Should not be reachable but don't want to risk it.
-        else => return,
-    };
-    var buf = try self.alloc.allocSentinel(u8, size, 0);
+    // Decode with the SIMD decoder, strict per the Kitty clipboard
+    // spec that also governs OSC 52 base64 handling: a request with
+    // characters outside the base64 alphabet is discarded entirely
+    // (never partially decoded), while a missing-padding tail is
+    // tolerated since OSC 52 has no way to report errors.
+    var buf = try self.alloc.allocSentinel(u8, simd.base64.maxLen(data), 0);
     defer self.alloc.free(buf);
-    buf[buf.len] = 0;
-
-    // Decode
-    dec.decode(buf, data) catch |err| switch (err) {
-        // Ignore this. It is possible to actually have valid data and
-        // get this error, so we allow it.
-        error.InvalidPadding => {},
-
-        else => {
-            log.info("application sent invalid base64 data for OSC 52", .{});
-            return;
-        },
+    const decoded = simd.base64.decodeStrict(data, buf, .optional) catch {
+        log.info("application sent invalid base64 data for OSC 52", .{});
+        return;
     };
-    assert(buf[buf.len] == 0);
+    buf[decoded.len] = 0;
 
     // When clipboard-write is "ask" a prompt is displayed to the user asking
     // them to confirm the clipboard access. Each app runtime handles this
@@ -2227,7 +2214,7 @@ fn clipboardWrite(self: *const Surface, data: []const u8, loc: apprt.Clipboard) 
     const confirm = self.config.clipboard_write == .ask;
     self.rt_surface.setClipboard(loc, &.{.{
         .mime = "text/plain",
-        .data = buf,
+        .data = buf[0..decoded.len :0],
     }}, confirm) catch |err| {
         log.err("error setting clipboard string err={}", .{err});
         return;
@@ -5929,8 +5916,46 @@ pub fn completeClipboardRequest(
             // If we need confirmation we return an error without
             // consuming the request state; the apprt keeps it alive
             // for the confirmation flow. A session grant carried by
-            // the request skips the prompt.
+            // the request skips the prompt, and a request with no
+            // data types is exempt from prompting entirely; see
+            // readPromptExempt.
             if (self.config.clipboard_read == .ask and
+                !complete.confirmed and
+                !kitty.granted and
+                !terminal.kitty.clipboard.readPromptExempt(kitty.mimes.len))
+            {
+                return error.UnauthorizedPaste;
+            }
+
+            // Past the confirmation check the request is consumed:
+            // every path from here, including errors, must destroy it.
+            defer kitty.destroy();
+
+            // Record a session grant when the user asked to remember
+            // their decision and the request carried a usable
+            // password. The grants live with the terminal state on
+            // the IO thread.
+            if (complete.remember and kitty.pw.len > 0) {
+                const pw = try self.alloc.dupe(u8, kitty.pw);
+                self.queueIo(.{ .kitty_clipboard_grant_read = .{
+                    .alloc = self.alloc,
+                    .pw = pw,
+                } }, .unlocked);
+            }
+
+            try self.completeKittyClipboardRead(
+                kitty,
+                complete.contents,
+                complete.available,
+            );
+        },
+
+        .kitty_write => |kitty| {
+            // If we need confirmation we return an error without
+            // consuming the request state; the apprt keeps it alive
+            // for the confirmation flow. A session grant carried by
+            // the request skips the prompt.
+            if (self.config.clipboard_write == .ask and
                 !complete.confirmed and
                 !kitty.granted)
             {
@@ -5947,16 +5972,40 @@ pub fn completeClipboardRequest(
             // the IO thread.
             if (complete.remember and kitty.pw.len > 0) {
                 const pw = try self.alloc.dupe(u8, kitty.pw);
-                self.queueIo(.{ .kitty_clipboard_grant = .{
+                self.queueIo(.{ .kitty_clipboard_grant_write = .{
                     .alloc = self.alloc,
                     .pw = pw,
                 } }, .unlocked);
             }
 
-            try self.completeKittyClipboardRead(
-                kitty,
-                complete.contents,
-                complete.available,
+            // Apply the committed representations carried by the
+            // request itself; any contents echoed back by the apprt
+            // are only what its confirmation prompt displayed. An
+            // empty commit clears the clipboard, which the apprt
+            // write API expresses as a single empty text entry.
+            self.rt_surface.setClipboard(
+                kitty.location,
+                if (kitty.contents.len > 0) kitty.contents else &.{.{
+                    .mime = "text/plain",
+                    .data = "",
+                }},
+                false,
+            ) catch |err| {
+                log.err("error setting clipboard err={}", .{err});
+                try self.kittyClipboardStatus(
+                    .write,
+                    kitty.id,
+                    kitty.terminator,
+                    .EIO,
+                );
+                return;
+            };
+
+            try self.kittyClipboardStatus(
+                .write,
+                kitty.id,
+                kitty.terminator,
+                .DONE,
             );
         },
     }
@@ -5994,8 +6043,25 @@ pub fn denyClipboardRequest(self: *Surface, req: apprt.ClipboardRequest) void {
         // The Kitty clipboard protocol reports denial explicitly.
         .kitty_read => |kitty| {
             defer kitty.destroy();
-            self.kittyClipboardReadStatus(kitty, .EPERM) catch |err| {
+            self.kittyClipboardStatus(
+                .read,
+                kitty.id,
+                kitty.terminator,
+                .EPERM,
+            ) catch |err| {
                 log.warn("error replying to kitty clipboard read err={}", .{err});
+            };
+        },
+
+        .kitty_write => |kitty| {
+            defer kitty.destroy();
+            self.kittyClipboardStatus(
+                .write,
+                kitty.id,
+                kitty.terminator,
+                .EPERM,
+            ) catch |err| {
+                log.warn("error replying to kitty clipboard write err={}", .{err});
             };
         },
     }
@@ -6040,11 +6106,13 @@ fn startClipboardRequest(
             return .unsupported;
         },
 
-        // The clipboard-read policy was already applied by
-        // kittyClipboardRead, which owns replying on denial.
-        .kitty_read => {},
+        // The clipboard access policies were already applied by
+        // kittyClipboardRead and kittyClipboardWrite, which own
+        // replying on denial.
+        .kitty_read, .kitty_write => {},
 
-        // No clipboard write code paths travel through this function
+        // OSC 52 writes don't travel through this function; they go
+        // straight to the apprt setClipboard API.
         .osc_52_write => unreachable,
     }
 
@@ -6243,7 +6311,7 @@ fn kittyClipboardRead(
     if (self.config.clipboard_read == .deny) {
         defer req.destroy();
         log.info("application attempted to read clipboard, but 'clipboard-read' is set to deny", .{});
-        try self.kittyClipboardReadStatus(req, .EPERM);
+        try self.kittyClipboardStatus(.read, req.id, req.terminator, .EPERM);
         return;
     }
 
@@ -6252,7 +6320,7 @@ fn kittyClipboardRead(
         .{ .kitty_read = req },
     ) catch |err| {
         defer req.destroy();
-        self.kittyClipboardReadStatus(req, .EIO) catch {};
+        self.kittyClipboardStatus(.read, req.id, req.terminator, .EIO) catch {};
         return err;
     };
 
@@ -6273,24 +6341,68 @@ fn kittyClipboardRead(
         // unsupported primary selection.
         .unsupported => {
             defer req.destroy();
-            try self.kittyClipboardReadStatus(req, .ENOSYS);
+            try self.kittyClipboardStatus(.read, req.id, req.terminator, .ENOSYS);
         },
     }
 }
 
-/// Reply to a Kitty clipboard read with a single status packet.
-fn kittyClipboardReadStatus(
+/// Handle a committed Kitty clipboard protocol (OSC 5522) write
+/// transaction forwarded by the IO thread. This takes ownership of the
+/// request state.
+fn kittyClipboardWrite(
     self: *Surface,
-    req: *const apprt.ClipboardRequest.KittyRead,
-    status: terminal.kitty.clipboard.Status,
+    req: *apprt.ClipboardRequest.KittyWrite,
 ) !void {
+    // A write denied by policy answers EPERM so clients degrade
+    // gracefully instead of waiting on a response that never comes.
+    // The IO thread already fails transactions that begin under a
+    // deny policy, but the policy may have changed mid-transaction.
+    if (self.config.clipboard_write == .deny) {
+        defer req.destroy();
+        log.info("application attempted to write clipboard, but 'clipboard-write' is set to deny", .{});
+        try self.kittyClipboardStatus(.write, req.id, req.terminator, .EPERM);
+        return;
+    }
+
+    const result = self.startClipboardRequest(
+        req.location,
+        .{ .kitty_write = req },
+    ) catch |err| {
+        defer req.destroy();
+        self.kittyClipboardStatus(.write, req.id, req.terminator, .EIO) catch {};
+        return err;
+    };
+
+    switch (result) {
+        // The request completes asynchronously.
+        .started => {},
+
+        // The apprt can't write this clipboard at all, e.g. an
+        // unsupported primary selection. Writes carry their own
+        // contents so there is no meaningful unavailable state; treat
+        // it the same.
+        .unavailable, .unsupported => {
+            defer req.destroy();
+            try self.kittyClipboardStatus(.write, req.id, req.terminator, .ENOSYS);
+        },
+    }
+}
+
+/// Reply to a Kitty clipboard request with a single status packet.
+fn kittyClipboardStatus(
+    self: *Surface,
+    op: terminal.kitty.clipboard.Operation,
+    id: []const u8,
+    terminator: terminal.osc.Terminator,
+    status: terminal.kitty.clipboard.Status,
+) error{ OutOfMemory, WriteFailed }!void {
     var aw: std.Io.Writer.Allocating = .init(self.alloc);
     defer aw.deinit();
     try (terminal.kitty.clipboard.Response{
-        .op = .read,
+        .op = op,
         .status = status,
-        .id = req.id,
-        .terminator = req.terminator,
+        .id = id,
+        .terminator = terminator,
     }).encode(&aw.writer);
 
     self.queueIo(.{ .write_alloc = .{

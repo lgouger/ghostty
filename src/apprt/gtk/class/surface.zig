@@ -4245,9 +4245,11 @@ const Clipboard = struct {
         clipboard_type: apprt.Clipboard,
         state: apprt.ClipboardRequest,
     ) Allocator.Error!apprt.ClipboardReadResult {
-        // The GTK apprt doesn't support Kitty clipboard protocol reads
+        // The GTK apprt doesn't support the Kitty clipboard protocol
         // yet.
-        if (state == .kitty_read or state == .list) return .unsupported;
+        if (state == .kitty_read or
+            state == .kitty_write or
+            state == .list) return .unsupported;
 
         // Get our requested clipboard
         const clipboard = get(
@@ -4350,7 +4352,7 @@ const Clipboard = struct {
                 .request = &req,
                 .@"can-remember" = switch (req) {
                     .osc_52_read, .osc_52_write => true,
-                    .paste, .list, .kitty_read => false,
+                    .paste, .list, .kitty_read, .kitty_write => false,
                 },
                 .@"clipboard-contents" = contents_buf,
             },
@@ -4387,7 +4389,7 @@ const Clipboard = struct {
         if (remember) switch (req.*) {
             .osc_52_read => surface.config.clipboard_read = .allow,
             .osc_52_write => surface.config.clipboard_write = .allow,
-            .paste, .list, .kitty_read => {},
+            .paste, .list, .kitty_read, .kitty_write => {},
         };
 
         // Get our text
@@ -4425,7 +4427,7 @@ const Clipboard = struct {
         if (remember) switch (req.*) {
             .osc_52_read => surface.config.clipboard_read = .deny,
             .osc_52_write => surface.config.clipboard_write = .deny,
-            .paste, .list, .kitty_read => @panic("request should not be able to be remembered"),
+            .paste, .list, .kitty_read, .kitty_write => @panic("request should not be able to be remembered"),
         };
     }
 

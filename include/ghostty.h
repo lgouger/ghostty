@@ -75,6 +75,7 @@ typedef enum {
 typedef enum {
   GHOSTTY_CLIPBOARD_STANDARD,
   GHOSTTY_CLIPBOARD_SELECTION,
+  GHOSTTY_CLIPBOARD_PRIMARY,
 } ghostty_clipboard_e;
 
 // One representation of clipboard contents. The data is binary-safe with
@@ -113,6 +114,7 @@ typedef enum {
   GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ,
   GHOSTTY_CLIPBOARD_REQUEST_OSC_52_WRITE,
   GHOSTTY_CLIPBOARD_REQUEST_KITTY_READ,
+  GHOSTTY_CLIPBOARD_REQUEST_KITTY_WRITE,
   GHOSTTY_CLIPBOARD_REQUEST_LIST,
 } ghostty_clipboard_request_e;
 

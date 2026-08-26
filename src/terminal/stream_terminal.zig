@@ -85,6 +85,12 @@ pub const Handler = struct {
     /// remember the user's decision.
     kitty_clipboard_grants: kitty_clipboard.Grants = .{},
 
+    /// Maximum total decoded bytes accumulated by one Kitty clipboard
+    /// protocol (OSC 5522) write transaction, captured when the
+    /// transaction begins. Data beyond the limit fails the transaction
+    /// with EFBIG.
+    kitty_clipboard_write_max_bytes: usize = kitty_clipboard.max_write_size,
+
     /// Called for sequence identifiers not supported by this library.
     /// Currently, only APC is reported. Content is borrowed and only valid
     /// for the duration of the callback. Set `apc_handler.unknown_max_bytes`
@@ -655,12 +661,20 @@ pub const Handler = struct {
         }
 
         // Decode the base64 payload with the SIMD decoder (the same one
-        // used for Kitty graphics payloads) rather than the scalar std
-        // implementation; clipboard payloads can be megabytes.
+        // used for Kitty clipboard payloads) rather than the scalar std
+        // implementation; clipboard payloads can be megabytes. The
+        // Kitty clipboard spec governs OSC 52 base64 handling too: a
+        // request with characters outside the base64 alphabet is
+        // discarded entirely (never partially decoded), while a
+        // missing-padding tail is tolerated since OSC 52 has no way
+        // to report errors to the client.
         const alloc = self.terminal.gpa();
         const buf = try alloc.alloc(u8, simd.base64.maxLen(data));
         defer alloc.free(buf);
-        const decoded = try simd.base64.decode(data, buf);
+        const decoded = simd.base64.decodeStrict(data, buf, .optional) catch {
+            log.warn("OSC 52 clipboard write is not valid base64, ignoring", .{});
+            return;
+        };
 
         const contents = [_]clipboard.Content{.{
             .mime = "text/plain",
@@ -778,10 +792,24 @@ pub const Handler = struct {
         // Decode and validate the metadata.
         var arena: std.heap.ArenaAllocator = .init(self.terminal.gpa());
         defer arena.deinit();
-        const meta = (try kitty_clipboard.Metadata.parse(
+        const meta = (kitty_clipboard.Metadata.parse(
             arena.allocator(),
             v.metadata,
-        )) orelse return;
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.InvalidValue => {
+                const state = self.kitty_clipboard_write orelse return;
+                switch (kitty_clipboard.Metadata.operation(v.metadata) orelse return) {
+                    .wdata, .walias => self.kittyClipboardFinish(
+                        state,
+                        .EINVAL,
+                        v.terminator,
+                    ),
+                    .read, .write => {},
+                }
+                return;
+            },
+        }) orelse return;
 
         const payload = v.payload orelse "";
         switch (meta.op) {
@@ -809,6 +837,7 @@ pub const Handler = struct {
             error.Invalid => return,
         };
         defer decoded.deinit(alloc);
+        if (!decoded.isValidUtf8()) return;
 
         // Without a clipboard_read effect nothing can serve the read.
         // EPERM is the protocol's denial so clients degrade gracefully.
@@ -844,9 +873,14 @@ pub const Handler = struct {
         };
 
         // Per the spec a password without a name is no password. A
-        // stored grant for it lets the embedder skip its prompt.
+        // stored grant for it lets the embedder skip its prompt. A
+        // prompt-exempt request never consults the grants: the
+        // embedder serves it without a prompt anyway, and consuming a
+        // one-time paste password on a listing would burn the grant
+        // before the follow-up data read.
         const pw: []const u8 = if (meta.name.len > 0) meta.pw else "";
-        const granted = self.kitty_clipboard_grants.use(alloc, pw, .read);
+        const granted = !kitty_clipboard.readPromptExempt(mimes.len) and
+            self.kitty_clipboard_grants.use(alloc, pw, .read);
 
         var state: KittyClipboardReadState = .{
             .handler = self,
@@ -1005,7 +1039,9 @@ pub const Handler = struct {
         const alloc = self.terminal.gpa();
         const state = try alloc.create(kitty_clipboard.WriteState);
         errdefer alloc.destroy(state);
-        state.* = try .init(alloc, meta);
+        state.* = try .init(alloc, meta, .{
+            .max_size = self.kitty_clipboard_write_max_bytes,
+        });
         self.kitty_clipboard_write = state;
     }
 
@@ -1039,6 +1075,21 @@ pub const Handler = struct {
                 );
                 return error.OutOfMemory;
             },
+
+            // Data over the write limit aborts the transaction and is
+            // reported to the client.
+            error.TooLarge => self.kittyClipboardFinish(
+                state,
+                .EFBIG,
+                terminator,
+            ),
+
+            // An invalid base64 payload stream aborts the transaction.
+            error.Invalid => self.kittyClipboardFinish(
+                state,
+                .EINVAL,
+                terminator,
+            ),
         };
     }
 
@@ -1048,10 +1099,15 @@ pub const Handler = struct {
         payload: []const u8,
         terminator: osc.Terminator,
     ) error{OutOfMemory}!void {
-        // Aliases without a transaction or without a target MIME type
-        // are silently ignored.
+        // Aliases without a transaction are silently ignored. Once a
+        // transaction exists, a missing target MIME type is invalid and
+        // aborts the transaction.
         const state = self.kitty_clipboard_write orelse return;
-        if (meta.mime.len == 0) return;
+        if (meta.mime.len == 0) return self.kittyClipboardFinish(
+            state,
+            .EINVAL,
+            terminator,
+        );
 
         state.alias(
             self.terminal.gpa(),
@@ -1086,6 +1142,13 @@ pub const Handler = struct {
             error.OutOfMemory => {
                 self.kittyClipboardFinish(state, .EIO, terminator);
                 return error.OutOfMemory;
+            },
+
+            // The last MIME type's payload stream was not correctly
+            // padded, which aborts the transaction.
+            error.Invalid => {
+                self.kittyClipboardFinish(state, .EINVAL, terminator);
+                return;
             },
         };
         defer committed.deinit(alloc);
@@ -3357,6 +3420,9 @@ test "clipboard_write effect callback" {
         .{ .sequence = "\x1B]52;0;Y3V0\x1B\\", .location = .standard, .data = "cut" },
         .{ .sequence = "\x1B]52;x;ZmFsbGJhY2s=\x1B\\", .location = .standard, .data = "fallback" },
         .{ .sequence = "\x1B]52;c;YQBi\x1B\\", .location = .standard, .data = "a\x00b" },
+        // Missing padding is tolerated for OSC 52 since it has no way
+        // to report errors to the client, matching kitty.
+        .{ .sequence = "\x1B]52;c;dW5wYWRkZWQ\x1B\\", .location = .standard, .data = "unpadded" },
     };
 
     for (cases, 1..) |case, expected_count| {
@@ -3376,9 +3442,14 @@ test "clipboard_write effect callback" {
     try testing.expect(S.last_mime == null);
     try testing.expect(S.last_data == null);
 
-    // Reads and malformed base64 are ignored.
+    // Reads and malformed base64 are ignored. The whole request is
+    // discarded on invalid characters (including whitespace) rather
+    // than decoding around them, per the Kitty clipboard spec that
+    // governs OSC 52 base64 handling.
     s.nextSlice("\x1B]52;c;?\x1B\\");
     s.nextSlice("\x1B]52;c;***\x1B\\");
+    s.nextSlice("\x1B]52;c;SGVs!!!bG8=\x1B\\");
+    s.nextSlice("\x1B]52;c;aGVs bG8=\x1B\\");
     try testing.expectEqual(@as(usize, cases.len + 1), S.count);
 
     // OSC 1337 Copy shares the normalized clipboard write path.
@@ -3776,6 +3847,18 @@ test "kitty clipboard write result maps to response status" {
         "\x1B]5522;type=write:status=DONE\x07",
         S.responseSlice(),
     );
+
+    // A system without a primary selection answers a loc=primary write
+    // with ENOSYS, echoing the id.
+    S.reset();
+    S.write_result = .unsupported;
+    s.nextSlice("\x1B]5522;type=write:loc=primary:id=p1\x1B\\");
+    s.nextSlice("\x1B]5522;type=wdata\x1B\\");
+    try testing.expectEqual(clipboard.Location.primary, S.last_location);
+    try testing.expectEqualStrings(
+        "\x1B]5522;type=write:status=ENOSYS:id=p1\x1B\\",
+        S.responseSlice(),
+    );
 }
 
 test "kitty clipboard write without clipboard effect responds ENOSYS" {
@@ -3999,10 +4082,13 @@ test "kitty clipboard read password grants" {
     var s: Stream = .init(.{ .allocator = testing.allocator, .handler = handler });
     defer s.deinit();
 
+    // Every read requests a data type ("text/plain"): a request with
+    // no data types never consults the grants at all.
+    //
     // pw="secret", name="app": the first request isn't granted but the
     // reply may ask to remember it.
     S.read_result = .{ .success = .{ .remember = true } };
-    s.nextSlice("\x1B]5522;type=read:pw=c2VjcmV0:name=YXBw\x1B\\");
+    s.nextSlice("\x1B]5522;type=read:pw=c2VjcmV0:name=YXBw;dGV4dC9wbGFpbg==\x1B\\");
     try testing.expectEqual(@as(usize, 1), S.read_count);
     try testing.expectEqualStrings("app", S.readName());
     try testing.expect(!S.last_read_granted);
@@ -4010,30 +4096,30 @@ test "kitty clipboard read password grants" {
 
     // The same password is now granted; a different one is not.
     S.read_result = .{ .success = .{} };
-    s.nextSlice("\x1B]5522;type=read:pw=c2VjcmV0:name=YXBw\x1B\\");
+    s.nextSlice("\x1B]5522;type=read:pw=c2VjcmV0:name=YXBw;dGV4dC9wbGFpbg==\x1B\\");
     try testing.expect(S.last_read_granted);
-    s.nextSlice("\x1B]5522;type=read:pw=b3RoZXI=:name=YXBw\x1B\\");
+    s.nextSlice("\x1B]5522;type=read:pw=b3RoZXI=:name=YXBw;dGV4dC9wbGFpbg==\x1B\\");
     try testing.expect(!S.last_read_granted);
     try testing.expect(S.last_read_can_remember);
 
     // A password without a name doesn't count: it is neither granted
     // nor rememberable, even if the reply asks.
     S.read_result = .{ .success = .{ .remember = true } };
-    s.nextSlice("\x1B]5522;type=read:pw=c2VjcmV0\x1B\\");
+    s.nextSlice("\x1B]5522;type=read:pw=c2VjcmV0;dGV4dC9wbGFpbg==\x1B\\");
     try testing.expectEqualStrings("", S.readName());
     try testing.expect(!S.last_read_granted);
     try testing.expect(!S.last_read_can_remember);
-    s.nextSlice("\x1B]5522;type=read:pw=b3RoZXI=\x1B\\");
+    s.nextSlice("\x1B]5522;type=read:pw=b3RoZXI=;dGV4dC9wbGFpbg==\x1B\\");
     try testing.expect(!S.last_read_can_remember);
     S.read_result = .{ .success = .{} };
-    s.nextSlice("\x1B]5522;type=read:pw=b3RoZXI=:name=YXBw\x1B\\");
+    s.nextSlice("\x1B]5522;type=read:pw=b3RoZXI=:name=YXBw;dGV4dC9wbGFpbg==\x1B\\");
     try testing.expect(!S.last_read_granted);
 
     // A grant is advisory: the request is still forwarded and the
     // embedder may deny it.
     S.responses_len = 0;
     S.read_result = .denied;
-    s.nextSlice("\x1B]5522;type=read:id=d:pw=c2VjcmV0:name=YXBw\x1B\\");
+    s.nextSlice("\x1B]5522;type=read:id=d:pw=c2VjcmV0:name=YXBw;dGV4dC9wbGFpbg==\x1B\\");
     try testing.expect(S.last_read_granted);
     try testing.expectEqualStrings(
         "\x1B]5522;type=read:status=EPERM:id=d\x1B\\",
@@ -4042,6 +4128,38 @@ test "kitty clipboard read password grants" {
 
     // Grants are freed with the stream (the testing allocator catches
     // the leak otherwise).
+}
+
+test "kitty clipboard read targets-only never consumes a one-time grant" {
+    var t: Terminal = try .init(testing.io, testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = KittyClipboardCapture;
+    S.reset();
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+    handler.effects.clipboard_read = &S.clipboardRead;
+    var s: Stream = .init(.{ .allocator = testing.allocator, .handler = handler });
+    defer s.deinit();
+
+    // A one-time read grant, as minted for a paste event.
+    try s.handler.kitty_clipboard_grants.grant(testing.allocator, "otp", .read, true);
+
+    // A targets-only read (payload ".") is prompt-exempt so it never
+    // consults, and must not burn, the one-time password.
+    S.read_result = .{ .success = .{} };
+    s.nextSlice("\x1B]5522;type=read:pw=b3Rw:name=YXBw;Lg==\x1B\\");
+    try testing.expectEqual(@as(usize, 1), S.read_count);
+    try testing.expect(S.last_read_list);
+    try testing.expectEqual(@as(usize, 0), S.last_read_mimes_len);
+    try testing.expect(!S.last_read_granted);
+
+    // The follow-up data read still consumes the grant, exactly once.
+    s.nextSlice("\x1B]5522;type=read:pw=b3Rw:name=YXBw;dGV4dC9wbGFpbg==\x1B\\");
+    try testing.expect(S.last_read_granted);
+    s.nextSlice("\x1B]5522;type=read:pw=b3Rw:name=YXBw;dGV4dC9wbGFpbg==\x1B\\");
+    try testing.expect(!S.last_read_granted);
 }
 
 test "kitty clipboard write password grants" {
@@ -4168,7 +4286,121 @@ test "kitty clipboard new write replaces in-flight transaction" {
     );
 }
 
-test "kitty clipboard invalid walias payload aborts with EINVAL" {
+test "kitty clipboard invalid write packets abort with EINVAL" {
+    var t: Terminal = try .init(testing.io, testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = KittyClipboardCapture;
+    S.reset();
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+    handler.effects.clipboard_write = &S.clipboardWrite;
+    var s: Stream = .init(.{ .allocator = testing.allocator, .handler = handler });
+    defer s.deinit();
+
+    const invalid_packets = [_][]const u8{
+        // Alias payload decodes to a non-UTF-8 byte.
+        "\x1B]5522;type=walias:mime=dGV4dC9wbGFpbg==;/w==\x1B\\",
+        // Alias has no target MIME type.
+        "\x1B]5522;type=walias;VEVYVA==\x1B\\",
+        // Alias target MIME decodes to non-UTF-8 bytes.
+        "\x1B]5522;type=walias:mime=//4=;VEVYVA==\x1B\\",
+        // Write data MIME decodes to non-UTF-8 bytes.
+        "\x1B]5522;type=wdata:mime=//4=;R2hvc3Q=\x1B\\",
+    };
+
+    for (invalid_packets) |packet| {
+        S.responses_len = 0;
+        s.nextSlice("\x1B]5522;type=write:id=w\x1B\\");
+        s.nextSlice("\x1B]5522;type=wdata:mime=dGV4dC9wbGFpbg==;R2hvc3Q=\x1B\\");
+        s.nextSlice(packet);
+        try testing.expectEqualStrings(
+            "\x1B]5522;type=write:status=EINVAL:id=w\x1B\\",
+            S.responseSlice(),
+        );
+        try testing.expect(!s.handler.semantic_failure);
+
+        // The transaction is gone: a commit does nothing further.
+        s.nextSlice("\x1B]5522;type=wdata\x1B\\");
+        try testing.expectEqual(@as(usize, 0), S.write_count);
+        try testing.expectEqualStrings(
+            "\x1B]5522;type=write:status=EINVAL:id=w\x1B\\",
+            S.responseSlice(),
+        );
+    }
+}
+
+test "kitty clipboard invalid read text does not abort a write" {
+    var t: Terminal = try .init(testing.io, testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = KittyClipboardCapture;
+    S.reset();
+    S.read_result = .{ .success = .{} };
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+    handler.effects.clipboard_read = &S.clipboardRead;
+    handler.effects.clipboard_write = &S.clipboardWrite;
+    var s: Stream = .init(.{ .allocator = testing.allocator, .handler = handler });
+    defer s.deinit();
+
+    s.nextSlice("\x1B]5522;type=write:id=w\x1B\\");
+    s.nextSlice("\x1B]5522;type=wdata:mime=dGV4dC9wbGFpbg==;R2hvc3Q=\x1B\\");
+
+    // The read payload decodes to a non-UTF-8 byte. It is dropped without
+    // invoking the clipboard effect or disturbing the write transaction.
+    s.nextSlice("\x1B]5522;type=read;/w==\x1B\\");
+    try testing.expectEqual(@as(usize, 0), S.read_count);
+    try testing.expectEqual(@as(usize, 0), S.responses_len);
+
+    s.nextSlice("\x1B]5522;type=wdata\x1B\\");
+    try testing.expectEqual(@as(usize, 1), S.write_count);
+    try testing.expectEqualStrings(
+        "\x1B]5522;type=write:status=DONE:id=w\x1B\\",
+        S.responseSlice(),
+    );
+}
+
+test "kitty clipboard oversized text write aborts with EFBIG" {
+    var t: Terminal = try .init(testing.io, testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = KittyClipboardCapture;
+    S.reset();
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+    handler.effects.clipboard_write = &S.clipboardWrite;
+    var s: Stream = .init(.{ .allocator = testing.allocator, .handler = handler });
+    defer s.deinit();
+
+    // Shrink the limit so the test doesn't have to stream the
+    // default 64MiB.
+    s.handler.kitty_clipboard_write_max_bytes = 4;
+
+    s.nextSlice("\x1B]5522;type=write:id=w\x1B\\");
+    s.nextSlice("\x1B]5522;type=wdata:mime=dGV4dC9wbGFpbg==;SGVsbA==\x1B\\"); // "Hell"
+    try testing.expectEqual(@as(usize, 0), S.responses_len);
+    s.nextSlice("\x1B]5522;type=wdata:mime=dGV4dC9wbGFpbg==;bw==\x1B\\"); // "o"
+    try testing.expectEqualStrings(
+        "\x1B]5522;type=write:status=EFBIG:id=w\x1B\\",
+        S.responseSlice(),
+    );
+    try testing.expect(!s.handler.semantic_failure);
+
+    // The transaction is gone: later data and the commit do nothing.
+    s.nextSlice("\x1B]5522;type=wdata:mime=dGV4dC9wbGFpbg==;IQ==\x1B\\");
+    s.nextSlice("\x1B]5522;type=wdata\x1B\\");
+    try testing.expectEqual(@as(usize, 0), S.write_count);
+    try testing.expectEqualStrings(
+        "\x1B]5522;type=write:status=EFBIG:id=w\x1B\\",
+        S.responseSlice(),
+    );
+}
+
+test "kitty clipboard invalid wdata chunk aborts with EINVAL" {
     var t: Terminal = try .init(testing.io, testing.allocator, .{ .cols = 80, .rows = 24 });
     defer t.deinit(testing.allocator);
 
@@ -4182,15 +4414,16 @@ test "kitty clipboard invalid walias payload aborts with EINVAL" {
     defer s.deinit();
 
     s.nextSlice("\x1B]5522;type=write:id=w\x1B\\");
-    s.nextSlice("\x1B]5522;type=wdata:mime=dGV4dC9wbGFpbg==;R2hvc3Q=\x1B\\");
-    s.nextSlice("\x1B]5522;type=walias:mime=dGV4dC9wbGFpbg==;!!!\x1B\\");
+    s.nextSlice("\x1B]5522;type=wdata:mime=dGV4dC9wbGFpbg==;SGVsbG8=\x1B\\"); // "Hello"
+    s.nextSlice("\x1B]5522;type=wdata:mime=dGV4dC9wbGFpbg==;!!!bad!!!\x1B\\");
     try testing.expectEqualStrings(
         "\x1B]5522;type=write:status=EINVAL:id=w\x1B\\",
         S.responseSlice(),
     );
     try testing.expect(!s.handler.semantic_failure);
 
-    // The transaction is gone: a commit does nothing further.
+    // The transaction is gone: later data and the commit do nothing.
+    s.nextSlice("\x1B]5522;type=wdata:mime=dGV4dC9wbGFpbg==;V29ybGQ=\x1B\\"); // "World"
     s.nextSlice("\x1B]5522;type=wdata\x1B\\");
     try testing.expectEqual(@as(usize, 0), S.write_count);
     try testing.expectEqualStrings(
@@ -4199,7 +4432,7 @@ test "kitty clipboard invalid walias payload aborts with EINVAL" {
     );
 }
 
-test "kitty clipboard invalid wdata chunk is skipped" {
+test "kitty clipboard wdata chunks split one base64 stream" {
     var t: Terminal = try .init(testing.io, testing.allocator, .{ .cols = 80, .rows = 24 });
     defer t.deinit(testing.allocator);
 
@@ -4212,18 +4445,47 @@ test "kitty clipboard invalid wdata chunk is skipped" {
     var s: Stream = .init(.{ .allocator = testing.allocator, .handler = handler });
     defer s.deinit();
 
+    // "some data" encoded as one stream, split at non-group
+    // boundaries across packets.
     s.nextSlice("\x1B]5522;type=write\x1B\\");
-    s.nextSlice("\x1B]5522;type=wdata:mime=dGV4dC9wbGFpbg==;SGVsbG8=\x1B\\"); // "Hello"
-    s.nextSlice("\x1B]5522;type=wdata:mime=dGV4dC9wbGFpbg==;!!!bad!!!\x1B\\");
-    s.nextSlice("\x1B]5522;type=wdata:mime=dGV4dC9wbGFpbg==;V29ybGQ=\x1B\\"); // "World"
+    s.nextSlice("\x1B]5522;type=wdata:mime=dGV4dC9wbGFpbg==;c29\x1B\\");
+    s.nextSlice("\x1B]5522;type=wdata:mime=dGV4dC9wbGFpbg==;tZSBk\x1B\\");
+    s.nextSlice("\x1B]5522;type=wdata:mime=dGV4dC9wbGFpbg==;YXRh\x1B\\");
     s.nextSlice("\x1B]5522;type=wdata\x1B\\");
 
     try testing.expectEqual(@as(usize, 1), S.write_count);
-    try testing.expectEqualStrings("HelloWorld", S.dataAt(0));
+    try testing.expectEqualStrings("some data", S.dataAt(0));
     try testing.expectEqualStrings(
         "\x1B]5522;type=write:status=DONE\x1B\\",
         S.responseSlice(),
     );
+}
+
+test "kitty clipboard unpadded wdata stream aborts at commit" {
+    var t: Terminal = try .init(testing.io, testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = KittyClipboardCapture;
+    S.reset();
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+    handler.effects.clipboard_write = &S.clipboardWrite;
+    var s: Stream = .init(.{ .allocator = testing.allocator, .handler = handler });
+    defer s.deinit();
+
+    // "Hello" without its final padding byte: every packet decodes,
+    // but the stream ends mid-group so the commit reports EINVAL.
+    s.nextSlice("\x1B]5522;type=write:id=w\x1B\\");
+    s.nextSlice("\x1B]5522;type=wdata:mime=dGV4dC9wbGFpbg==;SGVsbG8\x1B\\");
+    try testing.expectEqual(@as(usize, 0), S.responses_len);
+    s.nextSlice("\x1B]5522;type=wdata\x1B\\");
+    try testing.expectEqual(@as(usize, 0), S.write_count);
+    try testing.expectEqualStrings(
+        "\x1B]5522;type=write:status=EINVAL:id=w\x1B\\",
+        S.responseSlice(),
+    );
+    try testing.expect(!s.handler.semantic_failure);
 }
 
 test "kitty clipboard in-flight transaction is freed on deinit" {
