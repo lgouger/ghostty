@@ -209,6 +209,7 @@ Overlay terminal_page {
   // this is only applied when a tab has more than one surface
   Revealer {
     reveal-child: bind $should_unfocused_split_be_shown(
+      template.config,
       search_overlay.active,
       template.focused,
       template.is-split,
@@ -280,10 +281,9 @@ Overlay terminal_page {
     notify::value => $notify_drop_value();
     actions: move;
   }
-}
 
-
-  // This dims all surfaces in an unfocused window
+  [overlay]
+  // This dims all surfaces in an unfocused window.
   Revealer {
     reveal-child: bind $should_unfocused_window_be_shown(template.config, template.window-active) as <bool>;
     transition-duration: 0;
@@ -299,6 +299,7 @@ Overlay terminal_page {
       ]
     }
   }
+}
 
 template $GhosttySurface: Adw.Bin {
   styles [
