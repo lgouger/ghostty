@@ -176,6 +176,7 @@ johnslavik
 jordandm
 josephmart
 jparise
+juaniraggio
 juniqlim
 justonia
 jzillmann
@@ -227,6 +228,7 @@ mikailmm
 minorcell
 misairuzame
 mischief
+mistertea
 mitchellh
 miupa
 mjbommar
