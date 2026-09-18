@@ -1060,6 +1060,11 @@ palette: Palette = .{},
 /// Unfocused splits by default are slightly faded out to make it easier to see
 /// which split is focused. To disable this feature, set this value to 1.
 ///
+/// This also applies to an entire window when it loses focus (e.g. when you
+/// switch to another application): every surface in the window, including
+/// one that would otherwise look focused, is dimmed by this same amount so
+/// it's easy to tell which window is currently focused.
+///
 /// A value of 1 is fully opaque and a value of 0 is fully transparent. Because
 /// "0" is not useful (it makes the window look very weird), the minimum value
 /// is 0.15. This value still looks weird but you can at least see what's going
@@ -1067,9 +1072,10 @@ palette: Palette = .{},
 /// valid value.
 @"unfocused-split-opacity": f64 = 0.7,
 
-/// The color to dim the unfocused split. Unfocused splits are dimmed by
-/// rendering a semi-transparent rectangle over the split. This sets the color of
-/// that rectangle and can be used to carefully control the dimming effect.
+/// The color to dim the unfocused split, and an unfocused window as a whole.
+/// Unfocused splits (and windows) are dimmed by rendering a semi-transparent
+/// rectangle over them. This sets the color of that rectangle and can be
+/// used to carefully control the dimming effect.
 ///
 /// This will default to the background color.
 ///
@@ -5215,6 +5221,46 @@ fn cloneValue(
             @compileError("unsupported field type");
         },
     }
+}
+
+/// The dimming overlay to draw over a surface to make it look unfocused.
+pub const Dim = struct {
+    /// The color of the overlay.
+    fill: Color,
+
+    /// The alpha of the overlay. This is always greater than zero; a
+    /// disabled dim is represented by a null `Dim`.
+    alpha: f64,
+};
+
+/// The focus state of a surface, used to determine its dim. See
+/// `unfocusedDim`.
+pub const Focus = struct {
+    /// The window containing the surface has focus.
+    window: bool,
+    /// The surface itself has focus.
+    surface: bool,
+    /// The surface is part of a split.
+    split: bool,
+};
+
+/// Returns the dimming overlay to draw over a surface, or null if the
+/// surface shouldn't be dimmed at all.
+///
+/// A surface is dimmed, using `unfocused-split-opacity` / `unfocused-split-fill`,
+/// whenever it isn't the one thing that should look "active": either its
+/// window doesn't have focus (in which case every surface in that window is
+/// dimmed equally, including the surface that would otherwise look focused,
+/// and including a window with no splits at all), or its window has focus
+/// but this particular surface is an unfocused split within it.
+pub fn unfocusedDim(self: *const Config, focus: Focus) ?Dim {
+    if (focus.window and (focus.surface or !focus.split)) return null;
+    const alpha = 1.0 - self.@"unfocused-split-opacity";
+    if (alpha <= 0) return null;
+    return .{
+        .fill = self.@"unfocused-split-fill" orelse self.background,
+        .alpha = alpha,
+    };
 }
 
 /// Returns an iterator that goes through each changed field from
@@ -10773,6 +10819,70 @@ test "working-directory expands tilde" {
         &buf,
     ) catch "~/projects/ghostty";
     try testing.expectEqualStrings(expected, cfg.@"working-directory".?.value().?);
+}
+
+test "unfocusedDim" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    const fill: Color = .{ .r = 1, .g = 2, .b = 3 };
+
+    var cfg = try Config.default(alloc);
+    defer cfg.deinit();
+    cfg.@"unfocused-split-opacity" = 0.7;
+    cfg.@"unfocused-split-fill" = fill;
+
+    const S = struct {
+        fn expectDim(expected_alpha: f64, actual: ?Dim) !void {
+            const dim = actual orelse return error.TestExpectedDim;
+            try testing.expectEqual(fill, dim.fill);
+            try testing.expectApproxEqAbs(expected_alpha, dim.alpha, 0.0001);
+        }
+    };
+
+    const focused_split: Focus = .{ .window = true, .surface = true, .split = true };
+    const unfocused_split: Focus = .{ .window = true, .surface = false, .split = true };
+    const single: Focus = .{ .window = true, .surface = true, .split = false };
+
+    // Window focused: only an unfocused split within it dims.
+    try testing.expect(cfg.unfocusedDim(single) == null);
+    try testing.expect(cfg.unfocusedDim(focused_split) == null);
+    try S.expectDim(0.3, cfg.unfocusedDim(unfocused_split));
+
+    // A surface that isn't part of a split never dims just because it
+    // somehow doesn't have focus while its window does.
+    try testing.expect(cfg.unfocusedDim(.{
+        .window = true,
+        .surface = false,
+        .split = false,
+    }) == null);
+
+    // Window unfocused: every surface in it dims by the same amount,
+    // including a single pane with no splits and the surface that would
+    // otherwise look focused within a split layout.
+    for ([_]Focus{
+        .{ .window = false, .surface = true, .split = false },
+        .{ .window = false, .surface = true, .split = true },
+        .{ .window = false, .surface = false, .split = true },
+    }) |focus| {
+        try S.expectDim(0.3, cfg.unfocusedDim(focus));
+    }
+
+    // Split dim disabled entirely (opacity 1): nothing dims, focused or not.
+    cfg.@"unfocused-split-opacity" = 1.0;
+    try testing.expect(cfg.unfocusedDim(unfocused_split) == null);
+    try testing.expect(cfg.unfocusedDim(.{
+        .window = false,
+        .surface = true,
+        .split = false,
+    }) == null);
+    cfg.@"unfocused-split-opacity" = 0.7;
+
+    // Fill defaults to the background color.
+    cfg.@"unfocused-split-fill" = null;
+    const dim = cfg.unfocusedDim(unfocused_split) orelse return error.TestExpectedDim;
+    try testing.expectEqual(cfg.background, dim.fill);
+    try testing.expectApproxEqAbs(@as(f64, 0.3), dim.alpha, 0.0001);
 }
 
 test "changed" {

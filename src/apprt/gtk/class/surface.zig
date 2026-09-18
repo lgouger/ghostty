@@ -330,6 +330,24 @@ pub const Surface = extern struct {
             );
         };
 
+        pub const @"window-active" = struct {
+            pub const name = "window-active";
+            const impl = gobject.ext.defineProperty(
+                name,
+                Self,
+                bool,
+                .{
+                    .default = true,
+                    .accessor = gobject.ext.privateFieldAccessor(
+                        Self,
+                        Private,
+                        &Private.offset,
+                        "window_active",
+                    ),
+                },
+            );
+        };
+
         pub const hadjustment = struct {
             pub const name = "hadjustment";
             const impl = gobject.ext.defineProperty(
@@ -690,6 +708,22 @@ pub const Surface = extern struct {
         is_split: bool = false,
         is_split_binding: ?*gobject.Binding = null,
 
+        // True if the parent window is active (has focus). Unlike our own
+        // `focused` property (which tracks GTK's widget focus and does not
+        // change when the window loses OS-level focus), this tells us
+        // whether the whole window should be dimmed.
+        window_active: bool = true,
+
+        // The window we're currently watching for `is-active` changes, along
+        // with the handler ID for that subscription. We hold a strong ref
+        // because the window may unparent us (e.g. when a split closes)
+        // before we get a chance to disconnect, and we can't look up the
+        // ancestor once that has happened. Must be disconnected before we're
+        // freed: the window outlives us and would otherwise call back into
+        // freed memory. See connect/disconnectWindowActiveSignal.
+        active_window: ?*Window = null,
+        window_active_handler: c_ulong = 0,
+
         action_group: ?*gio.SimpleActionGroup = null,
 
         // Gtk.Scrollable interface adjustments
@@ -871,14 +905,23 @@ pub const Surface = extern struct {
     }
 
     /// Callback used to determine whether unfocused-split-fill / unfocused-split-opacity
-    /// should be applied to the surface
+    /// should be applied to the surface. See Config.unfocusedDim for the rules that
+    /// decide whether a surface is dimmed.
     fn closureShouldUnfocusedSplitBeShown(
         _: *Self,
+        config_: ?*Config,
         search_active: c_int,
         focused: c_int,
         is_split: c_int,
+        window_active: c_int,
     ) callconv(.c) c_int {
-        return @intFromBool(search_active == 0 and focused == 0 and is_split != 0);
+        if (search_active != 0) return 0;
+        const config = config_ orelse return 0;
+        return @intFromBool(config.get().unfocusedDim(.{
+            .window = window_active != 0,
+            .surface = focused != 0,
+            .split = is_split != 0,
+        }) != null);
     }
 
     pub fn toggleFullscreen(self: *Self) void {
@@ -1885,6 +1928,11 @@ pub const Surface = extern struct {
 
     fn dispose(self: *Self) callconv(.c) void {
         const priv = self.private();
+
+        // Safety net in case we're disposed without being unrealized first.
+        // The window outlives us, so a lingering handler would call back
+        // into freed memory.
+        self.disconnectWindowActiveSignal();
 
         if (priv.config) |v| {
             v.unref();
@@ -3330,6 +3378,9 @@ pub const Surface = extern struct {
         // create a strong reference back to ourself and we want to be
         // able to release that in unrealize.
         priv.im_context.as(gtk.IMContext).setClientWidget(self.as(gtk.Widget));
+
+        // Connect to window's is-active property to track focus
+        self.connectWindowActiveSignal();
     }
 
     fn renderSurfaceUnrealize(
@@ -3338,6 +3389,10 @@ pub const Surface = extern struct {
     ) callconv(.c) void {
         log.debug("render surface unrealize", .{});
 
+        // Stop watching our window's active state. We may be realized again
+        // into a different window later.
+        self.disconnectWindowActiveSignal();
+
         const priv = self.private();
         if (priv.core_surface) |surface| {
             surface.displayUnrealized();
@@ -3345,6 +3400,63 @@ pub const Surface = extern struct {
 
         // Unset our input method
         priv.im_context.as(gtk.IMContext).setClientWidget(null);
+    }
+
+    fn connectWindowActiveSignal(self: *Self) void {
+        const priv = self.private();
+
+        // We can be realized more than once (e.g. if we're moved to another
+        // window), so make sure we're not already subscribed.
+        if (priv.active_window != null) return;
+
+        const window = ext.getAncestor(Window, self.as(gtk.Widget)) orelse return;
+
+        const was_active = priv.window_active;
+        priv.window_active = window.as(gtk.Window).isActive() != 0;
+        if (was_active != priv.window_active) {
+            self.as(gobject.Object).notify("window-active");
+        }
+
+        _ = window.as(gobject.Object).ref();
+        priv.active_window = window;
+        priv.window_active_handler = gobject.Object.signals.notify.connect(
+            window.as(gobject.Object),
+            *Self,
+            windowActiveChanged,
+            self,
+            .{ .detail = "is-active" },
+        );
+    }
+
+    fn disconnectWindowActiveSignal(self: *Self) void {
+        const priv = self.private();
+        const window = priv.active_window orelse return;
+
+        if (priv.window_active_handler != 0) {
+            gobject.signalHandlerDisconnect(
+                window.as(gobject.Object),
+                priv.window_active_handler,
+            );
+            priv.window_active_handler = 0;
+        }
+
+        window.as(gobject.Object).unref();
+        priv.active_window = null;
+    }
+
+    fn windowActiveChanged(
+        _: *gobject.Object,
+        _: *gobject.ParamSpec,
+        self: *Self,
+    ) callconv(.c) void {
+        const priv = self.private();
+        const window = priv.active_window orelse return;
+        const is_active = window.as(gtk.Window).isActive() != 0;
+
+        if (priv.window_active != is_active) {
+            priv.window_active = is_active;
+            self.as(gobject.Object).notify("window-active");
+        }
     }
 
     fn renderSurfaceMap(
@@ -3910,6 +4022,7 @@ pub const Surface = extern struct {
                 properties.@"title-override".impl,
                 properties.zoom.impl,
                 properties.@"is-split".impl,
+                properties.@"window-active".impl,
                 properties.readonly.impl,
 
                 // For Gtk.Scrollable

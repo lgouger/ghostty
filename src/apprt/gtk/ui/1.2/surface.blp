@@ -200,13 +200,17 @@ Overlay terminal_page {
   }
 
   [overlay]
-  // Apply unfocused-split-fill and unfocused-split-opacity to current surface
-  // this is only applied when a tab has more than one surface
+  // Apply unfocused-split-fill and unfocused-split-opacity to the current
+  // surface: either it's an unfocused split within a focused window, or its
+  // whole window is unfocused (in which case this applies even to a surface
+  // that isn't part of a split). See Config.unfocusedDim.
   Revealer {
     reveal-child: bind $should_unfocused_split_be_shown(
+      template.config,
       search_overlay.active,
       template.focused,
-      template.is-split
+      template.is-split,
+      template.window-active
       ) as <bool>;
     transition-duration: 0;
     // This is all necessary so that the Revealer itself doesn't override

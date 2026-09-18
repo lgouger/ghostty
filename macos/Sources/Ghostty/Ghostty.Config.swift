@@ -492,7 +492,7 @@ extension Ghostty {
 
         var unfocusedSplitOpacity: Double {
             guard let config = self.config else { return 1 }
-            var opacity: Double = 0.85
+            var opacity: Double = 0.7
             let key = "unfocused-split-opacity"
             _ = ghostty_config_get(config, &opacity, key, UInt(key.lengthOfBytes(using: .utf8)))
             return 1 - opacity
@@ -513,6 +513,27 @@ extension Ghostty {
                 green: Double(color.g) / 255,
                 blue: Double(color.b) / 255
             )
+        }
+
+        /// The dim overlay to draw over a surface, or nil if the surface shouldn't be
+        /// dimmed. This mirrors `Config.unfocusedDim` in `src/config/Config.zig`; keep
+        /// the two in sync.
+        ///
+        /// A surface is dimmed, using unfocused-split-opacity/unfocused-split-fill,
+        /// whenever it isn't the one thing that should look "active": either its
+        /// window doesn't have focus (in which case every surface in that window is
+        /// dimmed equally, including the surface that would otherwise look focused,
+        /// and including a window with no splits at all), or its window has focus
+        /// but this particular surface is an unfocused split within it.
+        func unfocusedDim(
+            windowFocused: Bool,
+            surfaceFocused: Bool,
+            isSplit: Bool
+        ) -> (fill: Color, alpha: Double)? {
+            if windowFocused && (surfaceFocused || !isSplit) { return nil }
+            let alpha = unfocusedSplitOpacity
+            guard alpha > 0 else { return nil }
+            return (unfocusedSplitFill, alpha)
         }
 
         var splitDividerColor: Color {
