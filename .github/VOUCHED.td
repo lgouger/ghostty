@@ -250,6 +250,7 @@ neo773
 neoto
 neurosnap
 nicholas-ochoa
+nicolaair
 nicosuave
 nikicat
 nilsherzig
@@ -273,6 +274,7 @@ peterdavehello
 philocalyst
 phush0
 piedrahitac
+pltrz
 pluiedev
 pouwerkerk
 poweruser64
@@ -312,6 +314,7 @@ seruman
 seyoungjeong
 sghng
 shorsher
+shreeve
 silveirapf
 simonbcn
 slowdub
@@ -332,6 +335,7 @@ thomasfedb
 thoutbeckers
 ticclick
 tnagatomi
+toppk
 tothedarktowercame
 trag1c
 tristan957
