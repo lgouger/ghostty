@@ -519,8 +519,8 @@ pub fn init(
     // The font size we desire along with the DPI determined for the surface
     const font_size: font.face.DesiredSize = .{
         .points = config.@"font-size",
-        .xdpi = @intFromFloat(x_dpi),
-        .ydpi = @intFromFloat(y_dpi),
+        .xdpi = @intFromFloat(@round(x_dpi)),
+        .ydpi = @intFromFloat(@round(y_dpi)),
     };
 
     // Setup our font group. This will reuse an existing font group if
@@ -919,6 +919,19 @@ pub fn activateInspector(self: *Surface) !void {
     // Notify our components we have an inspector active
     _ = self.renderer_thread.mailbox.push(global.io(), .{ .inspector = true }, .{ .forever = {} });
     self.queueIo(.{ .inspector = true }, .unlocked);
+}
+
+/// Report to the renderer how well the apprt can present the frames
+/// the renderer exports. See `renderer.Health` and the renderer's
+/// `presentation_health` state for the semantics.
+pub fn reportPresentationHealth(self: *Surface, health: rendererpkg.Health) void {
+    _ = self.renderer_thread.mailbox.push(
+        global.io(),
+        .{ .presentation_health = health },
+        .forever,
+    );
+    self.renderer_thread.wakeup.notify() catch |err|
+        log.warn("failed to wake up renderer err={}", .{err});
 }
 
 /// Deactivate the inspector and stop collecting any information.
@@ -3721,8 +3734,8 @@ pub fn contentScaleCallback(self: *Surface, content_scale: apprt.ContentScale) !
     // Update our font size which is dependent on the DPI
     const size = size: {
         var size = self.font_size;
-        size.xdpi = @intFromFloat(x_dpi);
-        size.ydpi = @intFromFloat(y_dpi);
+        size.xdpi = @intFromFloat(@round(x_dpi));
+        size.ydpi = @intFromFloat(@round(y_dpi));
         break :size size;
     };
 
