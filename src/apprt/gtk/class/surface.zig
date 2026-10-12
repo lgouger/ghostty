@@ -1904,7 +1904,7 @@ pub const Surface = extern struct {
         );
 
         // Setup properties we can't set from our Blueprint file.
-        self.as(gtk.Widget).setCursorFromName("text");
+        priv.render_surface.as(gtk.Widget).setCursorFromName("text");
         priv.drag_handle.setCursorFromName("grab");
 
         // Initialize our config
@@ -2508,7 +2508,7 @@ pub const Surface = extern struct {
 
         // If we're hidden we set it to "none"
         if (priv.mouse_hidden) {
-            self.as(gtk.Widget).setCursorFromName("none");
+            priv.render_surface.as(gtk.Widget).setCursorFromName("none");
             return;
         }
 
@@ -2566,7 +2566,7 @@ pub const Surface = extern struct {
         };
 
         // Set our new cursor.
-        self.as(gtk.Widget).setCursorFromName(name.ptr);
+        priv.render_surface.as(gtk.Widget).setCursorFromName(name.ptr);
     }
 
     fn vadjValueChanged(adj: *gtk.Adjustment, self: *Self) callconv(.c) void {
