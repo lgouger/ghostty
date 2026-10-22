@@ -52,6 +52,7 @@ anhthang
 anmitalidev
 anthonyzhoon
 aprilnea
+aredmondd
 arneshbanerjee
 arvin7liu
 athaapa
@@ -68,6 +69,7 @@ bennettp123
 benodiwal
 bernsno
 beryesa
+binaryfire
 bitigchi
 bkircher
 bleikurr
@@ -85,6 +87,7 @@ chernetskyi
 chronologos
 clemg
 cmwetherell
+complexsplit
 crayxt
 craziestowl
 -creativision meatproxying
@@ -112,6 +115,7 @@ diego-moment
 diegoarmstrong
 dkinzler
 dmehala
+dmkenney
 dmunozv04
 dobbylee
 dolzenko
@@ -151,6 +155,7 @@ gagbo
 ghokun
 gmile
 gordonbondon
+-gotar No HITL
 gotenksin
 gpanders
 guilhermetk
@@ -268,6 +273,7 @@ myleshen
 nagato-yuzuru
 natesmyth
 neo773
+neobrain
 neoto
 neurosnap
 nicholas-ochoa
@@ -283,6 +289,7 @@ nwehg
 ocean6954
 ollieatkinson
 ollioddi
+olrtg
 oshdubh
 otomn
 paaloeye
@@ -306,6 +313,7 @@ pressatojump
 prihlop
 priyans-hu
 pssalman
+pugma
 puzza007
 pyre909
 qappell
@@ -358,6 +366,7 @@ tasselx
 tbrundige
 tdgroot
 tdslot
+thapakrish
 thirstycrow
 -thomas-trijindev No human in the loop
 thomasfedb

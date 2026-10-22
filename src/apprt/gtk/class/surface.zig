@@ -792,7 +792,7 @@ pub const Surface = extern struct {
         priv.overrides = .{
             .command = if (overrides.command) |c| c.clone(alloc) catch null else null,
             .shell_integration = overrides.shell_integration,
-            .working_directory = if (overrides.working_directory) |wd| alloc.dupeZ(u8, wd) catch null else null,
+            .working_directory = if (overrides.working_directory) |wd| alloc.dupeSentinel(u8, wd, 0) catch null else null,
         };
         return self;
     }
@@ -1029,7 +1029,7 @@ pub const Surface = extern struct {
         switch (value) {
             .activate => |name| {
                 // Duplicate the name string and push onto stack
-                const duped = try alloc.dupeZ(u8, name);
+                const duped = try alloc.dupeSentinel(u8, name, 0);
                 errdefer alloc.free(duped);
                 try priv.key_tables.append(alloc, duped);
             },
@@ -1239,14 +1239,12 @@ pub const Surface = extern struct {
             };
             const title = std.mem.span(title_);
             const body = body: {
-                const exit_code = value.exit_code orelse break :body std.fmt.allocPrintSentinel(
-                    alloc,
+                const exit_code = value.exit_code orelse break :body alloc.printSentinel(
                     "Command took {f}.",
                     .{value.duration.round(std.time.ns_per_ms)},
                     0,
                 ) catch break :notify;
-                break :body std.fmt.allocPrintSentinel(
-                    alloc,
+                break :body alloc.printSentinel(
                     "Command took {f} and exited with code {d}.",
                     .{ value.duration.round(std.time.ns_per_ms), exit_code },
                     0,
@@ -1324,15 +1322,7 @@ pub const Surface = extern struct {
             // This can trigger an input method so we need to notify the im context
             // where the cursor is so it can render the dropdowns in the correct
             // place.
-            if (priv.core_surface) |surface| {
-                const ime_point = surface.imePoint();
-                priv.im_context.as(gtk.IMContext).setCursorLocation(&.{
-                    .f_x = @intFromFloat(ime_point.x),
-                    .f_y = @intFromFloat(ime_point.y),
-                    .f_width = 1,
-                    .f_height = 1,
-                });
-            }
+            self.updateImePosition();
 
             // We note that we're in a keypress because we want some logic to
             // depend on this. For example, we don't want to send character events
@@ -2868,7 +2858,12 @@ pub const Surface = extern struct {
         priv.focused = focused;
 
         const ctx = priv.im_context.as(gtk.IMContext);
-        if (focused) ctx.focusIn() else ctx.focusOut();
+        if (focused) {
+            self.updateImePosition();
+            ctx.focusIn();
+        } else {
+            ctx.focusOut();
+        }
 
         _ = glib.idleAddOnce(idleFocus, self.ref());
         self.as(gobject.Object).notifyByPspec(properties.focused.impl.param_spec);
@@ -3213,6 +3208,33 @@ pub const Surface = extern struct {
         return @intFromBool(glib.SOURCE_REMOVE);
     }
 
+    /// Tell GTK where our cursor is so that the IME can place the candidate
+    /// window at the right position.
+    fn updateImePosition(self: *Self) void {
+        const priv = self.private();
+        const surface = priv.core_surface orelse return;
+
+        // GTK wants widget coordinates, so we divide by the surface scale
+        // only and leave out the font DPI scale (gtk-xft-dpi).
+        const surface_scale: f32 = @floatCast(scale_util.widgetSurfaceScale(
+            priv.render_surface.as(gtk.Widget),
+        ));
+        const ime_point = surface.imePointScaled(.{
+            .x = surface_scale,
+            .y = surface_scale,
+        });
+
+        // Snap outward to whole pixels; an empty rectangle means "unset".
+        const top = @floor(ime_point.y - ime_point.height);
+        const bottom = @ceil(ime_point.y);
+        priv.im_context.as(gtk.IMContext).setCursorLocation(&.{
+            .f_x = @intFromFloat(@floor(ime_point.x)),
+            .f_y = @intFromFloat(top),
+            .f_width = 1,
+            .f_height = @intFromFloat(@max(1, bottom - top)),
+        });
+    }
+
     fn imPreeditStart(
         _: *gtk.IMMulticontext,
         self: *Self,
@@ -3224,6 +3246,8 @@ pub const Surface = extern struct {
         const priv = self.private();
         priv.im_composing = true;
         priv.im_len = 0;
+
+        self.updateImePosition();
     }
 
     fn imPreeditChanged(
@@ -3263,6 +3287,8 @@ pub const Surface = extern struct {
                 .{err},
             );
         };
+
+        self.updateImePosition();
     }
 
     fn imPreeditEnd(
@@ -3673,13 +3699,14 @@ pub const Surface = extern struct {
         var buf: [32]u8 = undefined;
         priv.resize_overlay.setLabel(text: {
             const grid_size = surface.size.grid();
-            break :text std.fmt.bufPrintZ(
+            break :text std.mem.printSentinel(
                 &buf,
                 "{d} x {d}",
                 .{
                     grid_size.columns,
                     grid_size.rows,
                 },
+                0,
             ) catch |err| err: {
                 log.warn("unable to format text: {}", .{err});
                 break :err "";
@@ -3828,9 +3855,12 @@ pub const Surface = extern struct {
         x: f64,
         y: f64,
         self: *Self,
-    ) callconv(.c) void {
+    ) callconv(.c) c_int {
+        // Clean up overlay state
+        defer self.setDropOverlayDirection(null);
+
         const dropped_id = v.getUint64();
-        const dropped = self.core().?.app.findSurfaceByID(dropped_id) orelse return;
+        const dropped = self.core().?.app.findSurfaceByID(dropped_id) orelse return 0;
         const from = dropped.rt_surface.gobj();
 
         const st = ext.getAncestor(
@@ -3838,17 +3868,15 @@ pub const Surface = extern struct {
             self.as(gtk.Widget),
         ) orelse {
             log.warn("surface is not placed in a split tree", .{});
-            return;
+            return 0;
         };
 
         const dir = self.calcDropDirection(x, y);
 
         // The only error that could happen here is an OOM,
         // and in that case we're already milliseconds away from crashing, so...
-        st.moveSplit(from, self, dir) catch return;
-
-        // Clean up overlay state
-        self.setDropOverlayDirection(null);
+        st.moveSplit(from, self, dir) catch return 0;
+        return 1;
     }
 
     fn surfaceDropLeave(
